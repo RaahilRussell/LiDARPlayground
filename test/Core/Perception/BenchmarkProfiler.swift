@@ -81,7 +81,11 @@ final class BenchmarkProfiler {
             phase = .failed("UltralyticsYOLO package unavailable — nothing real to measure.")
             return
         }
-        if ar.runState != .running { ar.start() }
+        // Don't override a session the user paused; ask instead.
+        guard ar.runState == .running else {
+            phase = .failed("AR session is \(ar.runState.rawValue.lowercased()) — start it (Camera tab) and retry.")
+            return
+        }
 
         self.plan = plan
         results = []
@@ -159,7 +163,8 @@ final class BenchmarkProfiler {
         phase = .finished
     }
 
-    /// Returns nil once loaded, or a failure description.
+    /// Returns nil once loaded, or a failure description. An AR interruption while
+    /// loading cancels the whole run (callers check Task.isCancelled).
     private func waitForLoad(_ variant: ModelVariant) async -> String? {
         let deadline = CACurrentMediaTime() + Self.loadTimeout
         while !Task.isCancelled {
@@ -170,6 +175,7 @@ final class BenchmarkProfiler {
             case .failed(let message): return "Load failed: \(message)"
             case .loading, .notLoaded: break
             }
+            if let reason = interruptionReason() { cancel(reason: reason); return reason }
             if CACurrentMediaTime() > deadline { return "Load timed out" }
             try? await Task.sleep(for: .milliseconds(50))
         }

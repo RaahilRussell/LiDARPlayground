@@ -21,9 +21,10 @@ import CoreVideo
 import Foundation
 import Observation
 import QuartzCore
+import simd
 
 /// Small, display-only images derived from one frame (≤ depth resolution).
-struct FramePreviews: @unchecked Sendable {   // CGImage is immutable
+nonisolated struct FramePreviews: @unchecked Sendable {   // CGImage is immutable
     var rgb: CGImage?
     var depth: CGImage?
     var confidence: CGImage?
@@ -48,9 +49,11 @@ final class PerceptionInspector {
     private(set) var previewProcessMs: Double?
     private(set) var log = EventLog()
 
-    // Live pipelines this inspector started (and therefore must stop).
-    private(set) var runningModel = false
-    private(set) var runningSpatialProximity = false
+    // Pipelines this inspector itself started. Only these are stopped when the
+    // inspector stops or switches to demo; anything already running is left as is.
+    @ObservationIgnored private var ownsModel = false
+    @ObservationIgnored private var ownsSpatial = false
+    @ObservationIgnored private var ownsDriver = false
 
     // Demo
     private(set) var demoRunning = false
@@ -93,8 +96,7 @@ final class PerceptionInspector {
     func stop() {
         liveTask?.cancel(); liveTask = nil
         stopDemo()
-        setModelRunning(false)
-        setSpatialProximityRunning(false)
+        releaseOwnedPipelines()
     }
 
     /// Backgrounding: same as stop; the view restarts polling on return.
@@ -107,8 +109,7 @@ final class PerceptionInspector {
         case .demo:
             // Keep demo strictly apart from live inputs: halt live polling/pipelines.
             liveTask?.cancel(); liveTask = nil
-            setModelRunning(false)
-            setSpatialProximityRunning(false)
+            releaseOwnedPipelines()
             metadata = nil
             previews = nil
             log.append(origin: .demo, kind: .system, message: "Demo mode ON — synthetic data, live inputs paused",
@@ -127,23 +128,44 @@ final class PerceptionInspector {
 
     // MARK: - Live pipelines
 
+    var runningModel: Bool { system?.vision.isEnabled ?? false }
+    var runningSpatialProximity: Bool {
+        guard let system else { return false }
+        return system.spatial.isRunning && system.proximityDriver.running
+    }
+
+    /// Explicit user toggle. Starting claims ownership only if it wasn't already running.
     func setModelRunning(_ on: Bool) {
-        guard let vision = system?.vision, on != runningModel else { return }
-        if on { guard source == .live else { return }; vision.start() } else { vision.stop() }
-        runningModel = on
+        guard let vision = system?.vision, on != vision.isEnabled else { return }
+        if on {
+            guard source == .live else { return }
+            vision.start()
+            ownsModel = true
+        } else {
+            vision.stop()
+            ownsModel = false
+        }
     }
 
     func setSpatialProximityRunning(_ on: Bool) {
         guard let system, on != runningSpatialProximity else { return }
         if on {
             guard source == .live else { return }
-            system.spatial.start()
-            system.proximityDriver.start()
+            if !system.spatial.isRunning { system.spatial.start(); ownsSpatial = true }
+            if !system.proximityDriver.running { system.proximityDriver.start(); ownsDriver = true }
         } else {
             system.proximityDriver.stop()
             system.spatial.stop()
+            ownsSpatial = false
+            ownsDriver = false
         }
-        runningSpatialProximity = on
+    }
+
+    private func releaseOwnedPipelines() {
+        guard let system else { return }
+        if ownsModel { system.vision.stop(); ownsModel = false }
+        if ownsDriver { system.proximityDriver.stop(); ownsDriver = false }
+        if ownsSpatial { system.spatial.stop(); ownsSpatial = false }
     }
 
     // MARK: - Live polling

@@ -101,6 +101,9 @@ point_world = camera.transform * point_cam  // world space
 
 ## On-device test checklist (iPhone 15 Pro Max)
 
+> AI Perception Phases 7–9 (Benchmarks, Inspector, unit tests) have their own
+> checklist in [`docs/DEVICE_VALIDATION.md`](docs/DEVICE_VALIDATION.md).
+
 - [ ] App launches; camera permission prompt appears; feed is live.
 - [ ] Status strip updates: FPS ~60, tracking → Normal, depth On, valid % > 0, thermal nominal.
 - [ ] Camera: Pause stops the feed; Start resumes; Reset re-initializes tracking.

@@ -6,6 +6,8 @@
 //  independent of the Ultralytics SDK and of ARKit view code, so the engines,
 //  fusion, and UI can depend on them without pulling in those modules. Changing
 //  a type here must be matched by its fixture test (see testTests, Phase 9).
+//  Value types are explicitly `nonisolated` (the app target defaults to
+//  MainActor isolation) because they are built and read off the main actor.
 //
 
 import CoreGraphics
@@ -19,7 +21,7 @@ import simd
 /// (not the whole ARFrame) and only ever keep the latest one in flight, so ARKit's
 /// buffer pool is never starved. Marked @unchecked Sendable because the pixel
 /// buffers are only read, never mutated, after capture.
-struct SensorFrame: @unchecked Sendable {
+nonisolated struct SensorFrame: @unchecked Sendable {
     let capturedImage: CVPixelBuffer
     let depthMap: CVPixelBuffer?
     let confidenceMap: CVPixelBuffer?
@@ -86,7 +88,7 @@ nonisolated enum ComputeUnitOption: String, CaseIterable, Identifiable, Sendable
     }
 }
 
-enum ModelLoadState: Equatable, Sendable {
+nonisolated enum ModelLoadState: Equatable, Sendable {
     case notLoaded
     case loading
     case loaded
@@ -99,7 +101,7 @@ enum ModelLoadState: Equatable, Sendable {
 
 /// One detected instance mapped out of the SDK result into our own types.
 /// @unchecked Sendable: carries an immutable CGImage (not formally Sendable).
-struct DetectedObject: Identifiable, @unchecked Sendable {
+nonisolated struct DetectedObject: Identifiable, @unchecked Sendable {
     let id: Int
     let label: String
     let confidence: Float
@@ -110,7 +112,7 @@ struct DetectedObject: Identifiable, @unchecked Sendable {
 }
 
 /// The output of one inference pass, with real measured timings.
-struct DetectionResult: @unchecked Sendable {
+nonisolated struct DetectionResult: @unchecked Sendable {
     var objects: [DetectedObject] = []
     var classNames: [String] = []
     /// Combined instance mask for a quick overlay (per-instance masks live on objects).
@@ -133,7 +135,7 @@ struct DetectionResult: @unchecked Sendable {
 
 // MARK: - Depth refinement
 
-enum DepthFilterMode: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum DepthFilterMode: String, CaseIterable, Identifiable, Sendable {
     case raw = "Raw"
     case smoothed = "Smoothed"
     case confidenceMedian = "Conf. median"
@@ -144,7 +146,7 @@ enum DepthFilterMode: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Live-adjustable filter parameters.
-struct FilterParams: Sendable, Equatable {
+nonisolated struct FilterParams: Sendable, Equatable {
     var kernelRadius: Int = 2
     var spatialSigma: Float = 2.0
     var colorSigma: Float = 0.1
@@ -163,7 +165,7 @@ nonisolated enum OccupancyClass: String, Sendable {
 }
 
 /// A fused 3D observation of a recognized object.
-struct ObjectObservation: Identifiable, Sendable {
+nonisolated struct ObjectObservation: Identifiable, Sendable {
     let id: Int
     var label: String
     var confidence: Float
@@ -190,7 +192,7 @@ nonisolated enum ProximityState: String, Sendable, CaseIterable {
 }
 
 /// A single proximity decision, fully instrumented for the event inspector.
-struct ProximityEvent: Identifiable, Sendable {
+nonisolated struct ProximityEvent: Identifiable, Sendable {
     let id: UUID
     var state: ProximityState
     var distanceMeters: Float?

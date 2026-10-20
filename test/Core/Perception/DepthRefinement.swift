@@ -19,7 +19,7 @@ import CoreVideo
 import simd
 
 /// Flat depth field (row-major). depth[y*width+x] in metres, 0 == invalid.
-struct DepthField {
+nonisolated struct DepthField: Sendable {
     let width: Int
     let height: Int
     var depth: [Float]
