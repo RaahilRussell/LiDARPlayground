@@ -14,6 +14,11 @@
 //  Bounded, single-in-flight: we never queue a backlog of stale frames — each
 //  tick reads the LATEST frame and skips if an inference is already running.
 //
+//  Phase 7 instrumentation: an optional `instrumentationTap` receives one event
+//  per loop tick (a real completed inference, or why none ran). Events carry
+//  only numbers — never the ARFrame or pixel buffers. The loop paces
+//  start-to-start so `targetHz` is the rate actually requested.
+//
 
 import CoreGraphics
 import CoreImage
@@ -44,6 +49,11 @@ final class VisionInferenceEngine {
     private(set) var measuredInferenceMs: Double = 0
     private(set) var measuredEndToEndMs: Double = 0
     private(set) var measuredRateHz: Double = 0
+    /// Measured wall-clock load time per variant (first load this app session).
+    private(set) var lastLoadMs: [ModelVariant: Double] = [:]
+
+    /// Benchmark/inspector tap. Called on the main actor; must stay cheap.
+    @ObservationIgnored var instrumentationTap: ((InferenceTickEvent) -> Void)?
 
     // MARK: - Private
     private weak var provider: ARSensorProvider?
@@ -51,8 +61,12 @@ final class VisionInferenceEngine {
     private var isInferring = false
     private var lastResultTime: TimeInterval = 0
 
+    /// Loaded models are keyed by variant AND the SDK acceleration flag, so changing
+    /// compute units really reloads instead of silently reusing the old config.
+    private struct ModelKey: Hashable { let variant: ModelVariant; let useGpu: Bool }
+
     #if canImport(UltralyticsYOLO)
-    private var models: [ModelVariant: YOLO] = [:]
+    private var models: [ModelKey: YOLO] = [:]
     #endif
 
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
@@ -89,22 +103,53 @@ final class VisionInferenceEngine {
         guard modelPresence[variant] == true else { loadState = .missing; return }
 
         #if canImport(UltralyticsYOLO)
-        if models[variant] != nil { loadState = .loaded; return }
+        let key = currentKey
+        if models[key] != nil { loadState = .loaded; return }
         loadState = .loading
-        let useGpu = (computeOption == .all || computeOption == .cpuAndGPU)
-        YOLO(variant.rawValue, task: .segment, useGpu: useGpu) { [weak self] result in
+        let loadStart = CACurrentMediaTime()
+        YOLO(variant.rawValue, task: .segment, useGpu: key.useGpu) { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
                 switch result {
                 case .success(let model):
-                    self.models[variant] = model
-                    self.loadState = (self.selectedVariant == variant) ? .loaded : self.loadState
+                    self.models[key] = model
+                    self.lastLoadMs[variant] = (CACurrentMediaTime() - loadStart) * 1000
+                    if self.currentKey == key { self.loadState = .loaded }
                 case .failure(let error):
-                    self.loadState = .failed(error.localizedDescription)
+                    if self.currentKey == key { self.loadState = .failed(error.localizedDescription) }
                 }
             }
         }
         #endif
+    }
+
+    private var currentKey: ModelKey { ModelKey(variant: selectedVariant, useGpu: computeOption.sdkUseGpu) }
+
+    // MARK: - Configuration snapshot (restored after profiling)
+
+    struct Configuration: Equatable {
+        var variant: ModelVariant
+        var computeOption: ComputeUnitOption
+        var targetHz: Double
+        var confidenceThreshold: Float
+        var isEnabled: Bool
+    }
+
+    func captureConfiguration() -> Configuration {
+        Configuration(variant: selectedVariant, computeOption: computeOption, targetHz: targetHz,
+                      confidenceThreshold: confidenceThreshold, isEnabled: isEnabled)
+    }
+
+    func restore(_ c: Configuration) {
+        targetHz = c.targetHz
+        confidenceThreshold = c.confidenceThreshold
+        computeOption = c.computeOption
+        if selectedVariant != c.variant {
+            switchModel(to: c.variant)
+        } else {
+            loadSelectedModel()
+        }
+        if !c.isEnabled { stop() }
     }
 
     // MARK: - Run loop
@@ -132,14 +177,22 @@ final class VisionInferenceEngine {
     private func runLoop() async {
         while !Task.isCancelled && isEnabled {
             let interval = max(0.03, 1.0 / max(1, targetHz))
-            await tick()
-            try? await Task.sleep(for: .seconds(interval))
+            let started = CACurrentMediaTime()
+            await tick(interval: interval)
+            // Start-to-start pacing; always yield briefly so we never busy-spin.
+            let elapsed = CACurrentMediaTime() - started
+            try? await Task.sleep(for: .seconds(max(0.005, interval - elapsed)))
         }
     }
 
-    private func tick() async {
-        guard !isInferring, loadState == .loaded else { return }
-        guard let provider, provider.isRunning, let frame = provider.snapshot() else { return }
+    private func report(_ event: InferenceTickEvent) { instrumentationTap?(event) }
+
+    private func tick(interval: Double) async {
+        guard !isInferring else { return }
+        guard sdkAvailable else { loadState = .sdkUnavailable; report(.notReady(.sdkUnavailable)); return }
+        guard loadState == .loaded else { report(.notReady(.modelNotLoaded)); return }
+        guard let provider, provider.isRunning else { report(.notReady(.sessionNotRunning)); return }
+        guard let frame = provider.snapshot() else { report(.notReady(.noFrame)); return }
         isInferring = true
         defer { isInferring = false }
 
@@ -148,16 +201,24 @@ final class VisionInferenceEngine {
         let startWall = CACurrentMediaTime()
 
         #if canImport(UltralyticsYOLO)
-        guard let model = models[variant] else { return }
+        guard let model = models[currentKey] else { report(.notReady(.modelNotLoaded)); return }
         // Zero-copy from the ARFrame; orient to match the portrait display.
         let ciImage = CIImage(cvPixelBuffer: frame.capturedImage).oriented(.right)
         let result = await runInference(model: model, image: ciImage)
         let detection = convert(result, frame: frame, variant: variant,
                                 threshold: threshold, startWall: startWall)
+        let cycle = CACurrentMediaTime() - startWall
+        report(.completed(InferenceSample(
+            variant: variant, completedAt: CACurrentMediaTime(), frameTimestamp: detection.frameTimestamp,
+            preprocessMs: detection.preprocessMs, inferenceMs: detection.inferenceMs,
+            postprocessMs: detection.postprocessMs, endToEndMs: detection.endToEndMs,
+            captureToResultMs: detection.captureToResultMs, objectCount: detection.objects.count,
+            skippedSlots: BenchmarkMath.skippedInferenceSlots(cycleSeconds: cycle, targetInterval: interval))))
+        // A model switched away mid-flight: the measurement is real, the overlay is stale.
+        guard variant == selectedVariant else { return }
         publish(detection)
         #else
-        _ = (variant, threshold, startWall)
-        loadState = .sdkUnavailable
+        _ = (variant, threshold, startWall, frame)
         #endif
     }
 
@@ -206,6 +267,7 @@ final class VisionInferenceEngine {
             inferenceMs: r.inferenceMs,
             postprocessMs: r.postMs,
             endToEndMs: (now - startWall) * 1000,
+            captureToResultMs: (now - frame.timestamp) * 1000,
             modelVariant: variant,
             maskDegenerate: degenerate)
     }

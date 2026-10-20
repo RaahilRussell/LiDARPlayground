@@ -5,7 +5,8 @@
 //  Phase 5/6 — experimental proximity state machine driven by GEOMETRY + its
 //  confidence (never by class labels alone). CLEAR/CAUTION/NEAR/CRITICAL/UNCERTAIN
 //  with hysteresis + cooldown to prevent oscillation. Thresholds are configurable
-//  for controlled testing — they are NOT assumed safety standards.
+//  for controlled testing — they are NOT assumed safety standards. The decision
+//  logic itself lives in ProximityStateMachine (pure, fixture-tested).
 //
 
 import Foundation
@@ -27,7 +28,11 @@ final class ProximityEvaluator {
     private(set) var recentEvents: [ProximityEvent] = []
 
     private unowned let haptics: HapticCoordinator
+    private var machine = ProximityStateMachine()
     private var stateEnteredAt: TimeInterval = 0
+
+    /// Bound on `recentEvents` so the inspector history never grows unbounded.
+    static let maxRecentEvents = 50
 
     init(haptics: HapticCoordinator) { self.haptics = haptics }
 
@@ -37,19 +42,14 @@ final class ProximityEvaluator {
                   label: String?, isSimulated: Bool, inputTimestamp: TimeInterval) -> ProximityEvent {
         let decidedAt = CACurrentMediaTime()
 
-        // Decide target state.
-        var target: ProximityState
-        if let d = nearest, d.isFinite, let c = confidence, c >= minConfidence {
-            target = rawState(for: d)
-        } else {
-            target = .uncertain
-        }
-        target = applyHysteresis(target, distance: nearest)
-
-        if target != currentState {
-            currentState = target
+        // Decide target state (pure logic lives in ProximityStateMachine).
+        machine.thresholds = ProximityThresholds(
+            criticalDistance: criticalDistance, nearDistance: nearDistance,
+            cautionDistance: cautionDistance, hysteresis: hysteresis, minConfidence: minConfidence)
+        if machine.step(nearest: nearest, confidence: confidence) {
             stateEnteredAt = decidedAt
         }
+        currentState = machine.state
 
         // Map state → pattern and enqueue (coordinator applies cooldown + priority).
         let pattern = Self.pattern(for: currentState)
@@ -65,49 +65,17 @@ final class ProximityEvaluator {
 
         lastEvent = event
         recentEvents.insert(event, at: 0)
-        if recentEvents.count > 50 { recentEvents.removeLast(recentEvents.count - 50) }
+        if recentEvents.count > Self.maxRecentEvents {
+            recentEvents.removeLast(recentEvents.count - Self.maxRecentEvents)
+        }
         return event
     }
 
     func reset() {
+        machine.reset()
         currentState = .clear
         lastEvent = nil
         recentEvents.removeAll()
-    }
-
-    // MARK: - State logic
-
-    private func rawState(for d: Float) -> ProximityState {
-        if d <= criticalDistance { return .critical }
-        if d <= nearDistance { return .near }
-        if d <= cautionDistance { return .caution }
-        return .clear
-    }
-
-    /// Require clearing a threshold by `hysteresis` before DE-escalating, so the
-    /// state doesn't flap at a boundary. Escalation is immediate.
-    private func applyHysteresis(_ target: ProximityState, distance: Float?) -> ProximityState {
-        guard let d = distance, d.isFinite, target != .uncertain, currentState != .uncertain else {
-            return target
-        }
-        if severity(target) >= severity(currentState) { return target } // escalating → accept
-        // De-escalating: only if we've moved comfortably past the boundary.
-        switch currentState {
-        case .critical: return d > criticalDistance + hysteresis ? target : .critical
-        case .near: return d > nearDistance + hysteresis ? target : .near
-        case .caution: return d > cautionDistance + hysteresis ? target : .caution
-        default: return target
-        }
-    }
-
-    private func severity(_ s: ProximityState) -> Int {
-        switch s {
-        case .clear: return 0
-        case .caution: return 1
-        case .near: return 2
-        case .critical: return 3
-        case .uncertain: return -1
-        }
     }
 
     static func pattern(for state: ProximityState) -> HapticPattern? {

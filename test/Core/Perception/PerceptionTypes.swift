@@ -34,7 +34,7 @@ struct SensorFrame: @unchecked Sendable {
 // MARK: - Model configuration
 
 /// The three instance-segmentation variants we benchmark.
-enum ModelVariant: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum ModelVariant: String, CaseIterable, Identifiable, Sendable {
     case nano = "yolo26n-seg"
     case small = "yolo26s-seg"
     case medium = "yolo26m-seg"
@@ -59,7 +59,7 @@ enum ModelVariant: String, CaseIterable, Identifiable, Sendable {
 }
 
 /// Maps our UI option to Core ML's compute-unit selection (ANE preferred by default).
-enum ComputeUnitOption: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum ComputeUnitOption: String, CaseIterable, Identifiable, Sendable {
     case all = "All (ANE+GPU+CPU)"
     case cpuAndNeuralEngine = "CPU + Neural Engine"
     case cpuAndGPU = "CPU + GPU"
@@ -73,6 +73,16 @@ enum ComputeUnitOption: String, CaseIterable, Identifiable, Sendable {
         case .cpuAndGPU: return .cpuAndGPU
         case .cpuOnly: return .cpuOnly
         }
+    }
+
+    /// The pinned UltralyticsYOLO SDK (8.9.16) exposes only a `useGpu` flag:
+    /// `true` → `.cpuAndNeuralEngine`, `false` → `.cpuOnly` (see BasePredictor.create).
+    /// Every option except CPU-only therefore maps to the accelerated path.
+    var sdkUseGpu: Bool { self != .cpuOnly }
+
+    /// What Core ML is actually configured with, for honest benchmark labels.
+    var effectiveDescription: String {
+        sdkUseGpu ? "CPU + Neural Engine (SDK useGpu=true)" : "CPU only (SDK useGpu=false)"
     }
 }
 
@@ -110,8 +120,11 @@ struct DetectionResult: @unchecked Sendable {
     var preprocessMs: Double = 0
     var inferenceMs: Double = 0
     var postprocessMs: Double = 0
-    /// Our own wall-clock end-to-end (capture → result) in ms.
+    /// Our own wall-clock time from inference-tick start (after the frame snapshot)
+    /// to the converted result, in ms. Includes SDK annotation drawing and task hops.
     var endToEndMs: Double = 0
+    /// Host clock at result minus ARFrame.timestamp, in ms (capture → result).
+    var captureToResultMs: Double = 0
     var modelVariant: ModelVariant = .nano
     /// True if the model ran but produced an empty/degenerate mask tensor
     /// (a known YOLO26 Core ML export pitfall) — surfaced, never faked.
@@ -142,10 +155,10 @@ struct FilterParams: Sendable, Equatable {
 
 // MARK: - Spatial / proximity
 
-enum SpatialRegion: String, Sendable { case left, center, right }
+nonisolated enum SpatialRegion: String, Sendable { case left, center, right }
 
 /// Honest occupancy semantics — unobserved is never treated as free.
-enum OccupancyClass: String, Sendable {
+nonisolated enum OccupancyClass: String, Sendable {
     case observedFree, occupied, unknown, lowConfidence
 }
 
@@ -168,7 +181,7 @@ struct ObjectObservation: Identifiable, Sendable {
     var uncertain: Bool                // insufficient valid depth → mark, don't trust
 }
 
-enum ProximityState: String, Sendable, CaseIterable {
+nonisolated enum ProximityState: String, Sendable, CaseIterable {
     case clear = "CLEAR"
     case caution = "CAUTION"
     case near = "NEAR"

@@ -4,8 +4,8 @@
 //
 //  Composition root for the AI Perception layer. Owns the engines and wires them
 //  to the single ARSession (via ARSensorProvider). Injected once through the
-//  SwiftUI environment. Later phases add depth-refinement, fusion, tracker,
-//  proximity, haptics, and diagnostics here.
+//  SwiftUI environment. Phase 7 adds the benchmark profiler; Phase 8 the
+//  perception inspector (live metadata + deterministic demo mode).
 //
 
 import Observation
@@ -19,12 +19,18 @@ final class PerceptionSystem {
     let spatial = SpatialAlgorithmsEngine()
     let haptics = HapticCoordinator()
     let proximity: ProximityEvaluator
+    let proximityDriver: ProximityDriver
+    let profiler: BenchmarkProfiler
+    let inspector: PerceptionInspector
 
     private(set) var provider: ARSensorProvider?
     private var configured = false
 
     init() {
         proximity = ProximityEvaluator(haptics: haptics)
+        proximityDriver = ProximityDriver(proximity: proximity, spatial: spatial)
+        profiler = BenchmarkProfiler(vision: vision)
+        inspector = PerceptionInspector()
     }
 
     /// Connects the perception engines to the one and only ARSession owner.
@@ -36,6 +42,16 @@ final class PerceptionSystem {
         depth.attach(provider: provider)
         fusion.attach(provider: provider, vision: vision)
         spatial.attach(provider: provider, fusion: fusion)
+        proximityDriver.attach(provider: provider)
+        profiler.attach(ar: manager)
+        inspector.attach(provider: provider, system: self)
         configured = true
+    }
+
+    /// Leaving the foreground invalidates measurements and live inputs: cancel the
+    /// profiler (which restores inference configuration) and pause the inspector.
+    func handleLeftForeground() {
+        profiler.cancel(reason: "App left the foreground")
+        inspector.pause()
     }
 }

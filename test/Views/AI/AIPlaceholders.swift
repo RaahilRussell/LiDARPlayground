@@ -8,14 +8,6 @@
 
 import SwiftUI
 
-struct BenchmarksView: View {
-    var body: some View {
-        ComingSoonView(title: "Benchmarks",
-                       milestone: "n/s/m comparison, 60s profiler, frame-time graph, thermal, dropped frames — Phase 7.",
-                       systemImage: "speedometer")
-    }
-}
-
 struct PerceptionInspectorView: View {
     var body: some View {
         ComingSoonView(title: "Inspector",

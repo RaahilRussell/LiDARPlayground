@@ -37,6 +37,7 @@ struct testApp: App {
             case .active:
                 ar.handleBecameActive()
             case .background, .inactive:
+                perception.handleLeftForeground()
                 ar.handleResignActive()
             @unknown default:
                 break

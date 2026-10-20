@@ -11,14 +11,14 @@
 
 import simd
 
-struct FloorPlane {
+nonisolated struct FloorPlane: Sendable {
     var normal: SIMD3<Float>   // unit, pointing up
     var d: Float               // plane: dot(normal, p) + d = 0
     var inliers: Int
     func signedDistance(_ p: SIMD3<Float>) -> Float { simd_dot(normal, p) + d }
 }
 
-struct PointCluster: Identifiable {
+nonisolated struct PointCluster: Identifiable, Sendable {
     let id: Int
     var centroid: SIMD3<Float>
     var count: Int
@@ -27,7 +27,7 @@ struct PointCluster: Identifiable {
 }
 
 /// Per-direction occupancy summary (camera-relative).
-struct RegionOccupancy: Identifiable {
+nonisolated struct RegionOccupancy: Identifiable, Equatable, Sendable {
     let id: SpatialRegion
     var nearestMeters: Float?
     var meanConfidence: Float
@@ -35,15 +35,27 @@ struct RegionOccupancy: Identifiable {
     var occupancy: OccupancyClass
 }
 
-enum SpatialAlgorithms {
+/// Integer voxel coordinate used by `SpatialAlgorithms.cluster`.
+nonisolated struct VoxelKey: Hashable, Sendable { let x: Int; let y: Int; let z: Int }
+
+/// Pure and nonisolated so it can run off the main actor and in fixture tests.
+nonisolated enum SpatialAlgorithms {
 
     // MARK: - RANSAC floor plane
 
     /// Fits the dominant near-horizontal plane. Returns nil if none is convincing.
     static func estimateFloor(points: [SIMD3<Float>], iterations: Int = 80,
                               threshold: Float = 0.04, minInlierFraction: Float = 0.2) -> FloorPlane? {
-        guard points.count >= 50 else { return nil }
         var rng = SystemRandomNumberGenerator()
+        return estimateFloor(points: points, iterations: iterations, threshold: threshold,
+                             minInlierFraction: minInlierFraction, using: &rng)
+    }
+
+    /// Same RANSAC fit with an injectable generator (seeded in tests for determinism).
+    static func estimateFloor<G: RandomNumberGenerator>(points: [SIMD3<Float>], iterations: Int = 80,
+                                                        threshold: Float = 0.04, minInlierFraction: Float = 0.2,
+                                                        using rng: inout G) -> FloorPlane? {
+        guard points.count >= 50 else { return nil }
         var best: FloorPlane?
         for _ in 0..<iterations {
             let a = points[Int.random(in: 0..<points.count, using: &rng)]
@@ -82,7 +94,7 @@ enum SpatialAlgorithms {
 
     static func cluster(points: [SIMD3<Float>], voxel: Float = 0.15, minPoints: Int = 10) -> [PointCluster] {
         guard !points.isEmpty else { return [] }
-        struct Key: Hashable { let x: Int; let y: Int; let z: Int }
+        typealias Key = VoxelKey
         func key(_ p: SIMD3<Float>) -> Key {
             Key(x: Int(floor(p.x / voxel)), y: Int(floor(p.y / voxel)), z: Int(floor(p.z / voxel)))
         }

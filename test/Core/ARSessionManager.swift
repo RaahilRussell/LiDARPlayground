@@ -52,6 +52,16 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// User-facing visualization preferences shared across tabs.
     var depthSource: DepthSource = .smoothed
 
+    /// Instrumentation tap (Phase 7 profiler): receives each delivered ARFrame's
+    /// capture timestamp. Only a Double is passed — the frame is never retained.
+    @ObservationIgnored var frameTimestampTap: ((TimeInterval) -> Void)?
+
+    /// Frame rate of the running configuration's video format, if known.
+    var nominalFramesPerSecond: Int? {
+        guard let fps = session.configuration?.videoFormat.framesPerSecond, fps > 0 else { return nil }
+        return fps
+    }
+
     // MARK: - Pose & motion (Feature 6) — all values are LOCAL ARKit coordinates,
     // not GPS. Origin is wherever the session started.
 
@@ -278,6 +288,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         fpsLastTimestamp = t
         lastFrameTimestamp = t
+        frameTimestampTap?(t)
         isDepthAvailable = (frame.sceneDepth != nil) || (frame.smoothedSceneDepth != nil)
 
         updatePose(frame: frame, time: t)
