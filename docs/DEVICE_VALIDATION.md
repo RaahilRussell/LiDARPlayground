@@ -6,9 +6,9 @@ This is a prototype: none of these checks make it a navigation aid.
 
 ## Build and unit tests (Mac)
 
-- [ ] `xcodebuild … -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build` succeeds (command in `CLAUDE.md`).
+- [x] `xcodebuild … -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build` succeeds (command in `CLAUDE.md`).
 - [ ] No new Swift concurrency errors; review any new isolation warnings.
-- [ ] `testTests` passes on an iOS 26.5 Simulator (Product ▸ Test, or
+- [x] `testTests` passes on an iOS 26.5 Simulator (Product ▸ Test, or
       `xcodebuild test -project test.xcodeproj -scheme test -destination 'platform=iOS Simulator,name=<device>'`).
       Suites: Depth refinement, Spatial algorithms, Proximity, Benchmark statistics, Demo mode, Inspector models.
 - [ ] Simulator: Bench shows "Needs a physical ARKit device"; Inspector demo mode runs; no crash.
@@ -43,3 +43,18 @@ This is a prototype: none of these checks make it a navigation aid.
 - [ ] Live AI, Depth Lab, Fusion, Haptics tabs behave as before; Haptic Lab simulated proximity still works.
 - [ ] Live AI rate slider now achieves close to the requested Hz (loop paces start-to-start).
 - [ ] Background/foreground resumes the AR session cleanly.
+
+## Local validation recorded during setup
+
+Validated commit `942abeb` on the Mac using Xcode 26.5:
+
+- Unsigned Debug build for generic iOS: succeeded.
+- iPhone 17 Pro Simulator, iOS 26.5: 53 tests passed (58 cases including
+  parameterized inputs), zero failures and zero skipped tests.
+- Simulator app launch: succeeded; unsupported ARKit state and AI Perception
+  screen were visible. Full Bench/Inspector visual interaction remains unchecked
+  because desktop coordinate input failed during verification.
+- Existing concurrency warnings remain in older sensor/rendering helpers.
+  This validation does not assert Swift 6 strict-concurrency compatibility.
+- Physical-device benchmarking, LiDAR previews, thermal behavior, and haptic
+  output remain unchecked. Do not treat simulator tests as device validation.
