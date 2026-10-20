@@ -77,8 +77,15 @@ Use the separate-worktree workflow above when preserving an active checkout.
 - Claude repository status confirms cloud sessions can work in this repository.
 - Local unsigned Debug iOS build succeeded during setup.
 - Cloud smoke-test session: https://claude.ai/code/session_01Ekg2REMY57Db4kUnd9AbBp
-- Cloud execution hit the account usage limit. The documentation-only cloud
-  commit/push and retrieval round trip are not yet verified. Resume the session
-  after usage resets and verify its pushed branch before considering setup done.
+- Cloud session inspected the project and pushed documentation-only commit
+  `53355e2` to `claude/cloud-setup-smoke-test`.
+- `claude --teleport session_01Ekg2REMY57Db4kUnd9AbBp` successfully fetched and
+  checked out that branch and resumed the conversation locally.
+- The cloud-created `docs/cloud-smoke-test.md` was opened and verified in Xcode.
+- Setup returned the main checkout to main. The smoke-test file remains only on
+  the separate test branch. No app source was changed during setup.
+- A usage-limit banner appeared during the test, but the task completed anyway.
+  Check your plan and credit settings if future tasks pause; setup did not
+  enable or change paid extra usage.
 
 Official reference: https://code.claude.com/docs/en/claude-code-on-the-web
