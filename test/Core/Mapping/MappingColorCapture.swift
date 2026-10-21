@@ -3,6 +3,7 @@ import CoreImage
 import Foundation
 import ImageIO
 import Metal
+import UIKit
 import simd
 
 /// A first valid observation wins. Unseen cells can be filled by later views,
@@ -119,7 +120,7 @@ final class MappingColorCapture {
 
     /// The manager calls this only for an accepted frame in the active origin.
     /// At most one worker owns sensor buffers, sampled twice a second.
-    func observe(frame: ARFrame, generation: Int) {
+    func observe(frame: ARFrame, generation: Int, eligibleAnchorIDs: Set<UUID>? = nil) {
         guard generation == self.generation, processingTask == nil,
               frame.timestamp - lastObservation >= 0.5,
               case .normal = frame.camera.trackingState else { return }
@@ -127,12 +128,14 @@ final class MappingColorCapture {
         let date = Date()
         let pose = frame.camera.transform
         let shouldCaptureImage = shouldCaptureKeyframe(pose: pose, date: date)
-        let candidates = captureCandidates(frame.anchors.compactMap { $0 as? ARMeshAnchor })
+        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+            .filter { eligibleAnchorIDs?.contains($0.identifier) ?? true }
+        let candidates = captureCandidates(anchors)
         guard !candidates.isEmpty || shouldCaptureImage else { return }
         let depth = frame.sceneDepth ?? frame.smoothedSceneDepth
         let input = MapColorFrame(image: frame.capturedImage, depth: depth?.depthMap,
             confidence: depth?.confidenceMap, cameraTransform: pose,
-            intrinsics: frame.camera.intrinsics, capturedAt: date)
+            intrinsics: frame.camera.intrinsics, capturedAt: date, imageOrientation: imageOrientation())
         let operation = UUID()
         operationID = operation
         let worker = Task.detached(priority: .utility) {
@@ -164,6 +167,18 @@ final class MappingColorCapture {
     }
 
     func flush() async { await processingTask?.value }
+
+    private func imageOrientation() -> UInt32 {
+        let orientation = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?.effectiveGeometry.interfaceOrientation ?? .portrait
+        switch orientation {
+        case .portrait: return 6
+        case .portraitUpsideDown: return 8
+        case .landscapeLeft: return 3
+        case .landscapeRight: return 1
+        default: return 6
+        }
+    }
 
     /// Non-destructive: an unsuccessful save must never consume photos or
     /// colours. The caller resets only after a durable save and origin change.
@@ -233,7 +248,7 @@ final class MappingColorCapture {
 }
 
 private extension MapMeshSnapshot {
-    var colorWorldToLocal: simd_float4x4? {
+    nonisolated var colorWorldToLocal: simd_float4x4? {
         guard let m = anchorTransform, m.count == 16 else { return nil }
         let matrix = simd_float4x4(columns: (SIMD4(m[0], m[1], m[2], m[3]),
             SIMD4(m[4], m[5], m[6], m[7]), SIMD4(m[8], m[9], m[10], m[11]), SIMD4(m[12], m[13], m[14], m[15])))
@@ -270,7 +285,8 @@ nonisolated enum MapKeyframeEncoder {
             throw MapStorageError.invalidGeometry("camera image encoder is unavailable")
         }
         CGImageDestinationAddImage(destination, cgImage,
-            [kCGImageDestinationLossyCompressionQuality: 0.72, kCGImagePropertyOrientation: 1] as CFDictionary)
+            [kCGImageDestinationLossyCompressionQuality: 0.72,
+             kCGImagePropertyOrientation: frame.imageOrientation] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else {
             throw MapStorageError.invalidGeometry("camera image could not be encoded")
         }

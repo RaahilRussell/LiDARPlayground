@@ -11,6 +11,8 @@ nonisolated struct MapColorFrame: @unchecked Sendable {
     let cameraTransform: simd_float4x4
     let intrinsics: simd_float3x3
     let capturedAt: Date
+    /// EXIF presentation orientation; sampling/calibration retain native pixels.
+    var imageOrientation: UInt32 = 1
 }
 
 nonisolated struct MapColorCell: Hashable, Sendable {

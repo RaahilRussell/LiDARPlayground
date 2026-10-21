@@ -123,3 +123,23 @@ nonisolated enum TextAnnotationMatching {
         sqrt(pow(a.x - b.x, 2) + pow(a.y - b.y, 2) + pow(a.z - b.z, 2))
     }
 }
+
+nonisolated enum TextObservationExport {
+    private nonisolated struct Payload: Encodable {
+        let schemaVersion = 1
+        let coordinateSystem = "local AR world, metres; missing worldPosition means location unconfirmed"
+        let arrowReference = "upright captured image; up/down do not identify a floor or world bearing"
+        let evidenceImagesIncluded = false
+        let textAnnotations: [SavedTextAnnotation]
+        let directionalSignage: [SavedDirectionalSignage]
+    }
+
+    static func encode(annotations: [SavedTextAnnotation], signage: [SavedDirectionalSignage]) throws -> Data {
+        let texts = annotations.map { item in var copy = item; copy.evidenceJPEG = nil; return copy }
+        let signs = signage.map { item in var copy = item; copy.evidenceJPEG = nil; return copy }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(Payload(textAnnotations: texts, directionalSignage: signs))
+    }
+}

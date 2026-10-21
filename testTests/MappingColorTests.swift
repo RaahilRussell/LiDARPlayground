@@ -1,6 +1,8 @@
 import CoreVideo
 import Foundation
+import ImageIO
 import Testing
+import UIKit
 import simd
 @testable import test
 
@@ -157,6 +159,18 @@ struct MappingColorTests {
         #expect(capture.applying(to: geometry).keyframes == [keyframe])
         #expect(capture.applying(to: geometry).keyframes == [keyframe])
         #expect(capture.applying(to: geometry).meshes.first?.vertexColors == [1, 0, 0, 1])
+    }
+
+    @Test func portraitPhotoDisplaysUprightWithoutRotatingCalibrationPixels() throws {
+        var portrait = try frame()
+        portrait.imageOrientation = 6
+        let photo = try MapKeyframeEncoder.encode(portrait)
+        let source = try #require(CGImageSourceCreateWithData(photo.jpegData as CFData, nil))
+        let properties = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect((properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value == 6)
+        #expect(UIImage(data: photo.jpegData)?.imageOrientation == .right)
+        #expect(photo.imageWidth == 4 && photo.imageHeight == 4)
+        #expect(photo.intrinsics == [1, 0, 0, 0, 1, 0, 0, 0, 1])
     }
 
     @Test func rejectsMismatchedColourCountsInvalidColoursAndInvalidCameraImages() throws {

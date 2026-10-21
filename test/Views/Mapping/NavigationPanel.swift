@@ -42,7 +42,7 @@ struct NavigationPanel: View {
                 Text(error).font(.callout).foregroundStyle(.orange)
             }
             if navigation.capacityReached {
-                Text("Path capacity reached. Save this segment before continuing in a new segment.")
+                Text("Path recording is full. Existing directions remain available. Start a new place to record more paths.")
                     .font(.caption).foregroundStyle(.orange)
             }
         }

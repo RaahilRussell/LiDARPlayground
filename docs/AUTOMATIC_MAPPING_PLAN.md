@@ -45,8 +45,14 @@ single ARKit session and saved-place architecture from `MAPPING_PLAN.md`.
    direction is image-relative signage metadata, not a proven walking edge.
 7. Storage capacity is not a feature quota. Retain local observations and
    revisions needed for continuity; keep runtime/decoder bounds to protect the
-   phone. If a bounded segment fills, commit it before moving to another segment
-   and do not claim routes across unrelated coordinate spaces.
+   phone. Rotate bounded reconstruction/photo/text files after durable commits
+   while preserving the existing AR world and complete navigation graph. During
+   the write, briefly hold reconstruction/photo/text intake while camera/IMU,
+   depth and navigation continue. Reset only scene reconstruction afterward;
+   no automatic boundary resets tracking or cancels a route. If the graph fills,
+   stop adding path nodes explicitly while retaining its labels/routes. New Map
+   still deliberately starts a separate origin. This avoids periodic photo
+   storage boundaries erasing the user's ongoing route.
 
 ## Work and verification
 
