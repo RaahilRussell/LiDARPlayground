@@ -64,6 +64,9 @@ final class WorldHazardMap {
     private var loopTask: Task<Void, Never>?
     private var nextId = 0
     private var lastRecomputeTime: TimeInterval = 0
+    private var sessionGeneration: Int = -1
+    private var lastFusionTimestamp: TimeInterval = -1
+    private var lastSpatialTimestamp: TimeInterval = -1
 
     init(fusion: SpatialFusionEngine, spatial: SpatialAlgorithmsEngine) {
         self.fusion = fusion
@@ -78,7 +81,12 @@ final class WorldHazardMap {
     }
     func stop() {
         loopTask?.cancel(); loopTask = nil
+        clearResults()
+    }
+
+    func clearResults() {
         hazards = []; zones = []; corridorNearest = nil
+        lastRecomputeTime = 0; lastFusionTimestamp = -1; lastSpatialTimestamp = -1
     }
 
     private func loop() async {
@@ -92,23 +100,43 @@ final class WorldHazardMap {
 
     private func update() {
         let now = CACurrentMediaTime()
-        guard let frame = provider?.snapshot() else { decay(now); return }
+        guard let provider else { clearResults(); return }
+        if sessionGeneration != provider.sessionGeneration {
+            clearResults()
+            sessionGeneration = provider.sessionGeneration
+        }
+        guard let frame = provider.snapshot(), frame.trackingIsNormal else {
+            decay(now)
+            zones = []; corridorNearest = nil; lastRecomputeTime = 0
+            return
+        }
         let transform = frame.cameraTransform
 
         if frame.trackingIsNormal {
             // Ingest fused CV objects (already in world coordinates).
-            for obs in fusion.observations where !obs.uncertain && obs.nearestMeters.isFinite {
+            for obs in fusion.observations where !obs.uncertain && obs.nearestMeters.isFinite
+                && fusion.sessionGeneration == sessionGeneration
+                && obs.timestamp > lastFusionTimestamp
+                && ARSensorProvider.isFresh(timestamp: obs.timestamp, now: now) {
                 if let world = obs.positionWorld {
                     upsert(world: world, radius: 0.25, label: obs.label,
-                           confidence: obs.confidence, now: now)
+                           confidence: obs.confidence, now: obs.timestamp)
                 }
             }
+            if let timestamp = fusion.observations.map(\.timestamp).max() {
+                lastFusionTimestamp = max(lastFusionTimestamp, timestamp)
+            }
             // Ingest elevated LiDAR clusters (unlabeled geometry — covers walls, poles…).
-            for cluster in spatial.clusters {
-                let extent = cluster.maxBound - cluster.minBound
-                let radius = max(0.15, simd_length(extent) * 0.5)
-                upsert(world: cluster.centroid, radius: radius, label: nil,
-                       confidence: 0.5, now: now)
+            if spatial.hasWorldCoordinates, spatial.sessionGeneration == sessionGeneration,
+               spatial.frameTimestamp > lastSpatialTimestamp,
+               ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) {
+                for cluster in spatial.clusters {
+                    let extent = cluster.maxBound - cluster.minBound
+                    let radius = max(0.15, simd_length(extent) * 0.5)
+                    upsert(world: cluster.centroid, radius: radius, label: nil,
+                           confidence: 0.5, now: spatial.frameTimestamp)
+                }
+                lastSpatialTimestamp = spatial.frameTimestamp
             }
         }
 

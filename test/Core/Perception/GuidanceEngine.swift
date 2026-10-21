@@ -67,7 +67,6 @@ final class GuidanceEngine {
         guard !running else { return }
         running = true
         speech.configureAudioIfNeeded()
-        haptics.enabled = true
         ar?.start()
         vision.targetHz = 6          // modest rate — thermal/battery friendly
         vision.start()
@@ -113,6 +112,7 @@ final class GuidanceEngine {
     }
 
     private func announce() {
+        guard ar?.runState == .running else { statusText = "Sensing paused"; return }
         let state = proximity.currentState
         let event = proximity.lastEvent
         let distance = event?.distanceMeters
@@ -174,6 +174,11 @@ final class GuidanceEngine {
             speech.speak("Start guidance first.", priority: .high)
             return
         }
+        guard ar?.runState == .running, ar?.trackingIsNormal == true,
+              ar?.isRelocalizing == false else {
+            speech.speak("Sensor tracking is unavailable. Please wait for tracking to recover.", priority: .high)
+            return
+        }
         var parts: [String] = []
 
         // Side-aware summary from the persistent world hazard map (covers things
@@ -184,7 +189,7 @@ final class GuidanceEngine {
                 let label = zone.label ?? "obstacle"
                 parts.append("\(name): \(label) at \(distancePhrase(zone.distance))")
             } else {
-                parts.append("\(name): clear")
+                parts.append("\(name): no confirmed observation")
             }
         }
 

@@ -34,6 +34,7 @@ final class DepthRefinementEngine {
     // Temporal state
     private var previousRefined: [Float]?
     private var previousTranslation: SIMD3<Float>?
+    private var sessionGeneration: Int = -1
 
     func attach(provider: ARSensorProvider) { self.provider = provider }
 
@@ -56,6 +57,11 @@ final class DepthRefinementEngine {
     private func tick() async {
         guard !isProcessing, let provider, provider.isRunning,
               let frame = provider.snapshot(), frame.depthMap != nil else { return }
+        if sessionGeneration != provider.sessionGeneration {
+            previousRefined = nil; previousTranslation = nil
+            sessionGeneration = provider.sessionGeneration
+        }
+        let generation = provider.sessionGeneration
         isProcessing = true
         defer { isProcessing = false }
 
@@ -74,6 +80,9 @@ final class DepthRefinementEngine {
         let start = CACurrentMediaTime()
         let output = await Self.process(frame: frame, mode: mode, params: params,
                                         range: range, previous: carryPrevious)
+        guard !Task.isCancelled, provider.isRunning,
+              provider.sessionGeneration == generation,
+              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
         lastProcessMs = (CACurrentMediaTime() - start) * 1000
 
         rgbImage = output.rgb
@@ -102,7 +111,7 @@ final class DepthRefinementEngine {
                 return Output(rgb: nil, raw: nil, refined: nil, edges: nil,
                               validBefore: 0, validAfter: 0, refinedArray: [])
             }
-            let rawField = DepthRefinement.field(from: depthMap, confidence: frame.confidenceMap)
+            let rawField = DepthRefinement.field(from: depthMap, confidence: frame.rawConfidenceMap)
             let w = rawField.width, h = rawField.height
             let guide = DepthRefinement.rgbGuide(frame.capturedImage, width: w, height: h)
 

@@ -10,17 +10,43 @@
 
 import SwiftUI
 
-enum AppMode { case wearer, developer }
+enum AppMode: String, CaseIterable, Identifiable {
+    case mapping = "Maps"
+    case wearer = "Assist"
+    case developer = "Developer"
+    var id: String { rawValue }
+}
 
 struct AppRootView: View {
-    @State private var mode: AppMode = .wearer
+    @Environment(PerceptionSystem.self) private var perception
+    @State private var mode: AppMode = .mapping
 
     var body: some View {
-        switch mode {
-        case .wearer:
-            WearerModeView(onSwitchMode: { mode = .developer })
-        case .developer:
-            DeveloperModeContainer(onSwitchMode: { mode = .wearer })
+        VStack(spacing: 0) {
+            Picker("App mode", selection: $mode) {
+                ForEach(AppMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Theme.panel)
+
+            switch mode {
+            case .mapping:
+                MappingHomeView()
+            case .wearer:
+                WearerModeView(onSwitchMode: { mode = .developer })
+            case .developer:
+                DeveloperModeContainer(onSwitchMode: { mode = .wearer })
+            }
+        }
+        .tint(Theme.accent)
+        .onChange(of: mode) { _, newMode in
+            if newMode == .mapping {
+                perception.pauseForMapping()
+            } else if newMode != .wearer {
+                perception.guidance.stop()
+            }
         }
     }
 }

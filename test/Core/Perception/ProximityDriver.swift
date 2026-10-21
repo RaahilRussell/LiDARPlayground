@@ -60,6 +60,7 @@ final class ProximityDriver {
     private var lastLoggedState: ProximityState?
     private var smoothedUrgency: Float = 0
     private var smoothedBearing: Float = 0
+    private var sessionGeneration: Int = -1
 
     init(proximity: ProximityEvaluator, spatial: SpatialAlgorithmsEngine) {
         self.proximity = proximity
@@ -93,6 +94,7 @@ final class ProximityDriver {
         smoothedDistance = nil; primaryKey = nil; stableFrames = 0
         smoothedUrgency = 0; smoothedBearing = 0
         primaryLabel = nil; primaryDistance = nil; primaryRegion = nil
+        primaryTTC = nil
     }
 
     private func loop() async {
@@ -119,6 +121,22 @@ final class ProximityDriver {
             log(event); return
         }
 
+        if sessionGeneration != provider?.sessionGeneration {
+            sessionGeneration = provider?.sessionGeneration ?? -1
+            resetFilters()
+        }
+        guard let provider, let frame = provider.snapshot(), frame.trackingIsNormal,
+              spatial.sessionGeneration == provider.sessionGeneration,
+              ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) else {
+            resetFilters()
+            let event = proximity.evaluate(nearest: nil, confidence: nil, region: nil, label: nil,
+                                           isSimulated: false, inputTimestamp: now)
+            updateFeedback(state: event.state, distance: nil, ttc: nil,
+                           inPath: true, bearing: 0, now: now)
+            log(event)
+            return
+        }
+
         let hazard: Hazard?
         switch source {
         case .fusedObjects: hazard = fusedHazard() ?? occupancyHazard()
@@ -141,8 +159,8 @@ final class ProximityDriver {
             log(event)
         } else {
             // No hazard: observed-free space is CLEAR; never-observed space is UNCERTAIN.
-            let anyObservedFree = spatial.occupancy.contains { $0.occupancy == .observedFree }
-            let event = anyObservedFree
+            let forwardObservedFree = spatial.occupancy.contains { $0.id == .center && $0.occupancy == .observedFree }
+            let event = forwardObservedFree
                 ? proximity.evaluate(nearest: 10, confidence: 1, region: nil, label: nil,
                                      isSimulated: false, inputTimestamp: now)
                 : proximity.evaluate(nearest: nil, confidence: nil, region: nil, label: nil,

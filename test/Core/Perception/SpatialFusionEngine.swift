@@ -31,6 +31,7 @@ final class SpatialFusionEngine {
     private weak var vision: VisionInferenceEngine?
     private var loopTask: Task<Void, Never>?
     private var lastDetectionTimestamp: TimeInterval = -1
+    private(set) var sessionGeneration: Int = -1
 
     func attach(provider: ARSensorProvider, vision: VisionInferenceEngine) {
         self.provider = provider
@@ -41,7 +42,9 @@ final class SpatialFusionEngine {
         guard loopTask == nil else { return }
         loopTask = Task { [weak self] in await self?.loop() }
     }
-    func stop() { loopTask?.cancel(); loopTask = nil; observations = [] }
+    func stop() { loopTask?.cancel(); loopTask = nil; clearResults() }
+
+    func clearResults() { observations = []; lastDetectionTimestamp = -1 }
 
     private func loop() async {
         while !Task.isCancelled {
@@ -51,10 +54,21 @@ final class SpatialFusionEngine {
     }
 
     private func tick() async {
-        guard let provider, let vision,
+        guard let provider, let vision else { return }
+        if sessionGeneration != provider.sessionGeneration {
+            clearResults()
+            sessionGeneration = provider.sessionGeneration
+        }
+        observations.removeAll {
+            !ARSensorProvider.isFresh(timestamp: $0.timestamp, now: CACurrentMediaTime())
+        }
+        guard provider.isRunning, provider.snapshot() != nil,
+              vision.resultSessionGeneration == provider.sessionGeneration,
               let result = vision.latestResult,
               result.frameTimestamp != lastDetectionTimestamp,
-              let frame = provider.snapshot(),
+              let frame = vision.latestFrame,
+              frame.timestamp == result.frameTimestamp,
+              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()),
               let depthMap = frame.smoothedDepthMap ?? frame.depthMap else { return }
         lastDetectionTimestamp = result.frameTimestamp
 
@@ -72,6 +86,10 @@ final class SpatialFusionEngine {
                                  minCoverage: Float, nearPct: Float) -> [ObjectObservation] {
         let dw = CVPixelBufferGetWidth(depthMap)
         let dh = CVPixelBufferGetHeight(depthMap)
+        guard dw > 0, dh > 0 else { return [] }
+        let confidenceMatches = frame.confidenceMap.map {
+            CVPixelBufferGetWidth($0) == dw && CVPixelBufferGetHeight($0) == dh
+        } ?? false
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(depthMap, .readOnly) }
         if let c = frame.confidenceMap { CVPixelBufferLockBaseAddress(c, .readOnly) }
@@ -79,7 +97,7 @@ final class SpatialFusionEngine {
 
         guard let dbase = CVPixelBufferGetBaseAddress(depthMap) else { return [] }
         let drb = CVPixelBufferGetBytesPerRow(depthMap)
-        let cbase = frame.confidenceMap.flatMap { CVPixelBufferGetBaseAddress($0) }
+        let cbase = confidenceMatches ? frame.confidenceMap.flatMap { CVPixelBufferGetBaseAddress($0) } : nil
         let crb = frame.confidenceMap.map { CVPixelBufferGetBytesPerRow($0) } ?? 0
         let now = CACurrentMediaTime()
 
@@ -107,9 +125,10 @@ final class SpatialFusionEngine {
                 for x in x0...x1 {
                     total += 1
                     let d = drow[x]
-                    if d.isFinite && d > 0 {
+                    if d.isFinite && d > 0, let crow,
+                       Int(crow[x]) >= ARConfidenceLevel.medium.rawValue {
                         depths.append(d)
-                        if let crow { confSum += Int(crow[x]); confCount += 1 }
+                        confSum += Int(crow[x]); confCount += 1
                     }
                 }
             }
@@ -127,7 +146,7 @@ final class SpatialFusionEngine {
             let cam = unprojectCamera(nx: cxn, ny: cyn, depth: median.isFinite ? median : 1,
                                       intrinsics: frame.intrinsics, dw: dw, dh: dh,
                                       imageRes: frame.imageResolution)
-            let world: SIMD3<Float>? = frame.trackingIsNormal
+            let world: SIMD3<Float>? = frame.trackingIsNormal && !uncertain
                 ? { let w = frame.cameraTransform * SIMD4<Float>(cam, 1); return SIMD3(w.x, w.y, w.z) }()
                 : nil
             let azimuth = atan2(cam.x, -cam.z) * 180 / .pi

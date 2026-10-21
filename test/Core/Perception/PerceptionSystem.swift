@@ -66,5 +66,30 @@ final class PerceptionSystem {
     func handleLeftForeground() {
         profiler.cancel(reason: "App left the foreground")
         inspector.pause()
+        vision.clearResults()
+        fusion.clearResults()
+        spatial.clearResults()
+        hazardMap.clearResults()
+        feedback.stop()
+        speech.stopAll()
+    }
+
+    /// Mapping has exclusive use of the expensive sensing pipeline. Preserve
+    /// configuration preferences, but require an explicit restart of perception
+    /// after returning to wearer/developer mode.
+    func pauseForMapping() {
+        profiler.cancel(reason: "Opened Maps")
+        inspector.pause()
+        guidance.stop()
+        vision.stop()
+        depth.stop()
+        fusion.stop()
+        spatial.stop()
+        proximityDriver.stop()
+        hazardMap.stop()
+        proximity.reset()
+        feedback.stop()
+        spatialCue.stop()
+        speech.stopAll()
     }
 }

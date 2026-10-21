@@ -31,6 +31,9 @@ final class SpatialAlgorithmsEngine {
     private(set) var tracked: [TrackedObject] = []
     private(set) var snapshot = SpatialSnapshot()
     private(set) var lastMs: Double = 0
+    private(set) var frameTimestamp: TimeInterval = 0
+    private(set) var sessionGeneration: Int = -1
+    private(set) var hasWorldCoordinates = false
     var stride: Int = 6
 
     private weak var provider: ARSensorProvider?
@@ -52,7 +55,13 @@ final class SpatialAlgorithmsEngine {
     }
     func stop() {
         loopTask?.cancel(); loopTask = nil
+        clearResults()
+    }
+
+    func clearResults() {
         tracker.reset(); tracked = []
+        floor = nil; clusters = []; occupancy = []; snapshot = SpatialSnapshot()
+        frameTimestamp = 0; hasWorldCoordinates = false
     }
 
     private func loop() async {
@@ -63,18 +72,33 @@ final class SpatialAlgorithmsEngine {
     }
 
     private func tick() async {
-        guard !isWorking, let provider, provider.isRunning, let frame = provider.snapshot(),
-              let depthMap = frame.smoothedDepthMap ?? frame.depthMap else { return }
+        guard !isWorking, let provider else { return }
+        if sessionGeneration != provider.sessionGeneration {
+            clearResults()
+            sessionGeneration = provider.sessionGeneration
+        }
+        guard provider.isRunning, let frame = provider.snapshot(),
+              let depthMap = frame.smoothedDepthMap ?? frame.depthMap else {
+            clearResults()
+            return
+        }
+        guard frame.timestamp != frameTimestamp else { return }
         isWorking = true
         defer { isWorking = false }
 
         // Reset tracker if tracking degraded (don't emit confident motion on bad pose).
         if !frame.trackingIsNormal { tracker.reset() }
 
-        let s = self.stride
+        let s = max(1, self.stride)
+        let generation = provider.sessionGeneration
         let start = CACurrentMediaTime()
         let computed = await Self.compute(frame: frame, depthMap: depthMap, stride: s)
+        guard !Task.isCancelled, provider.isRunning,
+              provider.sessionGeneration == generation,
+              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
         lastMs = (CACurrentMediaTime() - start) * 1000
+        frameTimestamp = frame.timestamp
+        hasWorldCoordinates = frame.trackingIsNormal
 
         floor = computed.floor
         clusters = computed.clusters
@@ -133,8 +157,9 @@ final class SpatialAlgorithmsEngine {
                         let yc = (Float(y) - cy) * d / fy
                         let cam = SIMD3<Float>(xc, -yc, -d)
                         cameraPoints.append(cam)
-                        confs.append(crow.map { Float($0[x]) / 2 } ?? 1)
-                        if useWorld {
+                        let confidence = crow.map { Float($0[x]) / 2 } ?? 0
+                        confs.append(confidence)
+                        if useWorld && confidence >= 0.5 {
                             let w = T * SIMD4<Float>(cam, 1)
                             worldPoints.append(SIMD3(w.x, w.y, w.z))
                         }

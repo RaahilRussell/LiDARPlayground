@@ -1,33 +1,68 @@
 # LiDARPlayground
 
-An educational **sensor laboratory** for the iPhone's LiDAR scanner, camera, and
-ARKit tracking. It's a developer tool for *seeing* the raw output of Apple's
-depth sensing — a stepping stone before building a larger assistive-navigation
-platform, not a production navigation app.
+An educational **mapping and sensor laboratory** for the iPhone's LiDAR scanner,
+camera, and motion tracking. Scan and save places, revisit their reconstructed
+surfaces in 3D, or return in person to relocalize and continue a scan. The app
+also contains developer diagnostics and experimental assistive feedback; it is
+not a production navigation app.
 
-Built with SwiftUI + ARKit + SceneKit + CoreVideo/CoreImage + simd. No third-party
-dependencies. Target device: **iPhone 15 Pro Max** (any LiDAR-equipped iPhone/iPad
-Pro works).
+Built with SwiftUI + ARKit + SceneKit + CoreVideo/CoreImage + simd. The optional
+AI perception features use the UltralyticsYOLO Swift package and bundled Core ML
+models. Package resolution is recorded in `Package.resolved`. Target device:
+**iPhone 15 Pro Max**, running **iOS 26.5 or later**; other compatible LiDAR-equipped
+iPhones and iPad Pro models support the same mapping APIs.
 
 ---
 
 ## Run instructions
 
-1. Open `test.xcodeproj` in Xcode 26+.
+1. Open `test.xcodeproj` in **Xcode 26.5 or later** and resolve Swift packages.
 2. **Target `test` → General → Supported Destinations**: keep **iPhone** / **iPad**
    only (macOS & visionOS removed — ARKit world tracking is iOS-only). *(done)*
 3. **Signing & Capabilities → Team**: select your Apple ID / team.
 4. **Info**: `Privacy - Camera Usage Description` is set (`NSCameraUsageDescription`). *(done)*
 5. Select your **iPhone 15 Pro Max** as the run destination and press **Run**.
 
-> **Simulator note:** the app compiles and runs in the Simulator, but ARKit world
-> tracking + LiDAR depth do **not** exist there — AR tabs show an "unsupported"
-> state. All depth/mesh/point-cloud behavior must be verified **on-device**, and
-> has not been physically tested yet (⚠️ *awaiting device verification*).
+> **Simulator note:** ARKit world tracking and LiDAR depth do **not** exist in the
+> Simulator. Live mapping shows an unsupported state; storage and algorithm tests
+> can run there. Physical scanning and relocalization still require on-device
+> verification. See [device validation](docs/DEVICE_VALIDATION.md).
+
+## Mapping and saved places
+
+The app opens in **Maps**. Use the top selector to reach **Assist** or the
+existing **Developer** tools.
+
+1. In **Live Map**, allow camera access and move slowly around nearby textured
+   surfaces. The camera/IMU world tracker and LiDAR scene reconstruction share
+   one AR session. Tracking and map quality must be ready before saving.
+2. Tap **Save Place**, name the scan, and wait for confirmation. **Save Changes**
+   updates that place; **New Map** starts a separate scan after confirming that
+   unsaved work can be discarded.
+3. Open **Saved Places** to pause the camera and browse local scans. Drag to orbit,
+   pinch to zoom, use two fingers to pan, toggle wireframe, or tap **Fit map**.
+   Each row also offers rename and delete. Viewing works away from the location.
+4. At the original location, open a saved place and choose **Revisit & Continue
+   Mapping**. Match its reference photo. Stored surfaces appear in the camera
+   view only after relocalization succeeds; then extend the scan and save again.
+   If recognition takes too long, follow the guidance or cancel to start fresh.
+
+Each saved place contains a securely archived `ARWorldMap`, independent copied
+triangle geometry, a camera trail, a reference photo, and versioned metadata.
+Files stay in local Application Support. Writes commit a complete revision
+before replacing the manifest, so a failed save preserves the previous version.
+Scans are bounded to 750,000 vertices and 1,500,000 triangles; split larger areas
+into separate places. Missing surfaces are unknown, not evidence of free space.
+
+See the [implementation plan](docs/MAPPING_PLAN.md),
+[architecture review](docs/MAPPING_ARCHITECTURE.md), and
+[device checklist](docs/DEVICE_VALIDATION.md). The shared `test` scheme and
+`.github/workflows/ios.yml` run an unsigned iPhone build plus simulator regression
+tests on macOS; this does not replace iPhone testing.
 
 ---
 
-## What the app shows (5 tabs + a persistent status strip)
+## Developer sensor tools (5 tabs + a persistent status strip)
 
 The status strip (above every tab) shows: **tracking · FPS · depth on/off ·
 valid-depth % · thermal state**.

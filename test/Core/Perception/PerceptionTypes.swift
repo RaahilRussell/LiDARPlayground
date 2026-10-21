@@ -25,6 +25,8 @@ nonisolated struct SensorFrame: @unchecked Sendable {
     let capturedImage: CVPixelBuffer
     let depthMap: CVPixelBuffer?
     let confidenceMap: CVPixelBuffer?
+    /// Raw and smoothed depth may carry different confidence maps.
+    let rawConfidenceMap: CVPixelBuffer?
     let smoothedDepthMap: CVPixelBuffer?
     let intrinsics: simd_float3x3
     let imageResolution: CGSize

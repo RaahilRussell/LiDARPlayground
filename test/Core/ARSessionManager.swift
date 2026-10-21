@@ -7,8 +7,11 @@
 //
 
 import ARKit
+import CoreImage
+import ImageIO
 import Observation
 import QuartzCore
+import UIKit
 import simd
 
 /// High-level description of what the session is doing right now.
@@ -48,6 +51,42 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// Fraction 0...1 of depth pixels with usable (medium/high) confidence, or nil if unknown.
     private(set) var validDepthFraction: Double?
     private(set) var errorMessage: String?
+
+    /// Changes whenever previously published world coordinates become invalid.
+    private(set) var sessionGeneration: Int = 0
+    private(set) var worldMappingStatus: ARFrame.WorldMappingStatus = .notAvailable
+    private(set) var isRelocalizing = false
+    private(set) var hasLocalizedMap = false
+    private(set) var relocalizationTimedOut = false
+
+    var worldMappingDescription: String {
+        switch worldMappingStatus {
+        case .notAvailable: return "Not available"
+        case .limited: return "Learning the room"
+        case .extending: return "Extending map"
+        case .mapped: return "Ready to save"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    var canSaveWorldMap: Bool {
+        guard runState == .running, trackingIsNormal, !isRelocalizing, meshFaceCount > 0,
+              let frame = session.currentFrame,
+              frame.timestamp >= minimumFrameTimestamp,
+              CACurrentMediaTime() - frame.timestamp < 0.5 else { return false }
+        return worldMappingStatus == .extending || worldMappingStatus == .mapped
+    }
+
+    var relocalizationGuidance: String {
+        if relocalizationTimedOut {
+            return "This place has not been recognized yet. Match the saved camera view, improve the lighting, or start a new map."
+        }
+        if isRelocalizing {
+            return "Return to the saved place and slowly match the reference view. Mapping resumes when the place is recognized."
+        }
+        if !trackingIsNormal { return "Move slowly and point the camera toward well-lit, detailed surfaces." }
+        return "Scan the room from several angles. The camera and motion sensors track your pose while LiDAR maps surfaces."
+    }
 
     /// User-facing visualization preferences shared across tabs.
     var depthSource: DepthSource = .smoothed
@@ -97,6 +136,13 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// Set true the first time the user explicitly starts, so background/foreground
     /// transitions only auto-resume a session the user actually wanted running.
     private var userWantsRunning = false
+    private var pendingInitialWorldMap: ARWorldMap?
+    private var pendingRunOptions: ARSession.RunOptions = []
+    private var restoringSavedMap = false
+    private var restorationAnchorID: UUID?
+    private static let mapOriginAnchorName = "LiDARPlayground.saved-map-origin.v1"
+    private var relocalizationTimeoutTask: Task<Void, Never>?
+    private var minimumFrameTimestamp: TimeInterval = 0
 
     override init() {
         super.init()
@@ -141,40 +187,95 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             errorMessage = "ARWorldTracking is not supported on this device (requires a physical iPhone/iPad with ARKit). LiDAR features require a device with a LiDAR scanner."
             return
         }
+        guard runState != .running else { return }
         userWantsRunning = true
         errorMessage = nil
-        session.run(makeConfiguration(), options: [])
         runState = .running
+        runRequestedConfiguration()
     }
 
     func pause() {
         userWantsRunning = false
         session.pause()
         runState = .paused
+        invalidateLiveMetrics()
     }
 
     /// Full reset: discards tracking, anchors, and any accumulated mesh map.
     func reset() {
         guard supportsWorldTracking else { return }
+        errorMessage = nil
+        pendingInitialWorldMap = nil
+        restoringSavedMap = false
+        restorationAnchorID = nil
+        hasLocalizedMap = false
+        finishRelocalization()
+        sessionGeneration += 1
+        minimumFrameTimestamp = CACurrentMediaTime()
+        clearDerivedState()
+        pendingRunOptions = [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction]
+        if userWantsRunning {
+            runState = .running
+            runRequestedConfiguration()
+        } else {
+            // A reset while paused must not turn the camera back on.
+            session.pause()
+            runState = .paused
+        }
+    }
+
+    /// Deliberately begin scanning a new coordinate space, including from pause.
+    func startNewMap() {
+        reset()
+        start()
+    }
+
+    private func runRequestedConfiguration() {
+        let configuration = makeConfiguration()
+        configuration.initialWorldMap = pendingInitialWorldMap
+        let options = pendingRunOptions
+        pendingRunOptions = []
+        session.run(configuration, options: options)
+    }
+
+    func restoreWorldMap(_ worldMap: ARWorldMap) throws {
+        guard supportsWorldTracking, supportsMesh else { throw MappingSessionError.unsupported }
+        guard let origin = worldMap.anchors.first(where: { $0.name == Self.mapOriginAnchorName }) else {
+            throw MappingSessionError.invalidArchive
+        }
+        sessionGeneration += 1
+        minimumFrameTimestamp = CACurrentMediaTime()
+        clearDerivedState()
+        hasLocalizedMap = false
+        restoringSavedMap = true
+        restorationAnchorID = origin.identifier
+        pendingInitialWorldMap = worldMap
+        pendingRunOptions = [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction]
         userWantsRunning = true
         errorMessage = nil
-        session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
-        clearDerivedState()
         runState = .running
+        finishRelocalization()
+        beginRelocalization()
+        runRequestedConfiguration()
     }
+
+    func cancelRelocalization() { startNewMap() }
 
     // MARK: - Scene phase handling
 
     func handleResignActive() {
         // ARKit will interrupt automatically; we just reflect state. Don't call
         // pause() here or we won't be told when the interruption ends.
-        if runState == .running { runState = .interrupted }
+        if runState == .running {
+            runState = .interrupted
+            invalidateLiveMetrics()
+        }
     }
 
     func handleBecameActive() {
         if userWantsRunning && runState != .running {
-            session.run(makeConfiguration(), options: [])
             runState = .running
+            runRequestedConfiguration()
         }
     }
 
@@ -193,17 +294,16 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     nonisolated func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-        let desc = Self.describe(camera.trackingState)
-        let normal: Bool
-        if case .normal = camera.trackingState { normal = true } else { normal = false }
         MainActor.assumeIsolated {
-            self.trackingDescription = desc
-            self.trackingIsNormal = normal
+            self.updateTracking(camera.trackingState)
         }
     }
 
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
-        MainActor.assumeIsolated { self.runState = .interrupted }
+        MainActor.assumeIsolated {
+            if self.userWantsRunning { self.runState = .interrupted }
+            self.invalidateLiveMetrics()
+        }
     }
 
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
@@ -212,11 +312,20 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
     }
 
+    nonisolated func sessionShouldAttemptRelocalization(_ session: ARSession) -> Bool {
+        // Never silently replace the coordinate space of a saved/live map after
+        // an interruption. The UI provides an explicit Start New Map escape.
+        true
+    }
+
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
         let message = error.localizedDescription
         MainActor.assumeIsolated {
             self.errorMessage = message
             self.runState = .idle
+            self.userWantsRunning = false
+            self.invalidateLiveMetrics()
+            self.finishRelocalization()
         }
     }
 
@@ -257,11 +366,10 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         meshFaceCount = meshStats.values.reduce(0) { $0 + $1.f }
     }
 
-    /// Clears the accumulated mesh map (and movement trail) without stopping tracking.
+    /// Clear reconstruction and tracking together so no old map coordinates leak
+    /// into a fresh scan. Preserve the user's paused/running choice.
     func resetMeshMap() {
-        guard supportsWorldTracking else { return }
-        session.run(makeConfiguration(), options: [.removeExistingAnchors])
-        clearDerivedState()
+        reset()
     }
 
     private func clearDerivedState() {
@@ -272,12 +380,21 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         trail.removeAll()
         initialPosition = nil
         displacementMeters = 0
+        cameraPosition = .zero
+        cameraEulerDegrees = .zero
+        lastTrailTime = 0
+        worldMappingStatus = .notAvailable
+        invalidateLiveMetrics()
     }
 
     // MARK: - Per-frame ingest (main thread, lightweight only)
 
     private func ingest(frame: ARFrame) {
+        guard runState == .running, frame.timestamp >= minimumFrameTimestamp else { return }
         let t = frame.timestamp
+        let hasRestoredOrigin = !restoringSavedMap || frame.anchors.contains { $0.identifier == restorationAnchorID }
+        updateTracking(frame.camera.trackingState, acceptsLocalization: hasRestoredOrigin)
+        worldMappingStatus = frame.worldMappingStatus
         if fpsLastTimestamp > 0 {
             let dt = t - fpsLastTimestamp
             if dt > 0 {
@@ -297,6 +414,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     /// Updates local camera pose, displacement, and the movement trail.
     private func updatePose(frame: ARFrame, time t: TimeInterval) {
+        // Limited/relocalizing poses must not pollute saved geometry or trails.
+        guard trackingIsNormal, !isRelocalizing else { return }
         let transform = frame.camera.transform
         let pos = SIMD3<Float>(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         cameraPosition = pos
@@ -332,11 +451,15 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         validDepthComputeInFlight = true
         lastValidDepthComputeTime = now
+        let generation = sessionGeneration
 
         Task { [weak self] in
             let fraction = await ARSessionManager.usableFractionAsync(confidence)
-            self?.validDepthFraction = fraction
-            self?.validDepthComputeInFlight = false
+            guard let self else { return }
+            if self.sessionGeneration == generation, self.runState == .running {
+                self.validDepthFraction = fraction
+            }
+            self.validDepthComputeInFlight = false
         }
     }
 
@@ -377,6 +500,137 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     // MARK: - Helpers
 
+    private func invalidateLiveMetrics() {
+        trackingIsNormal = false
+        trackingDescription = "Waiting for tracking"
+        fps = 0
+        fpsLastTimestamp = 0
+        isDepthAvailable = false
+        validDepthFraction = nil
+    }
+
+    private func updateTracking(_ state: ARCamera.TrackingState, acceptsLocalization: Bool = false) {
+        guard runState == .running else { return }
+        trackingDescription = Self.describe(state)
+        if case .normal = state {
+            trackingIsNormal = true
+            // Only a new frame from this run can resolve the initial world map;
+            // a queued tracking callback from the previous run cannot do so.
+            if acceptsLocalization {
+                if restoringSavedMap {
+                    hasLocalizedMap = true
+                    restoringSavedMap = false
+                    restorationAnchorID = nil
+                    pendingInitialWorldMap = nil
+                }
+                finishRelocalization()
+            }
+        } else {
+            trackingIsNormal = false
+            if case .limited(.relocalizing) = state { beginRelocalization() }
+        }
+    }
+
+    private func beginRelocalization() {
+        guard !isRelocalizing else { return }
+        isRelocalizing = true
+        relocalizationTimedOut = false
+        let generation = sessionGeneration
+        relocalizationTimeoutTask?.cancel()
+        relocalizationTimeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            guard let self, self.sessionGeneration == generation, self.isRelocalizing else { return }
+            self.relocalizationTimedOut = true
+        }
+    }
+
+    private func finishRelocalization() {
+        isRelocalizing = false
+        relocalizationTimedOut = false
+        relocalizationTimeoutTask?.cancel()
+        relocalizationTimeoutTask = nil
+    }
+
+    /// Freeze renderable geometry independently of ARKit's opaque localization
+    /// archive. Metal buffers are copied here before any asynchronous work.
+    private func copyMappingGeometry() throws -> (SavedMapGeometry, CVPixelBuffer, CGImagePropertyOrientation) {
+        guard canSaveWorldMap, let frame = session.currentFrame else { throw MappingSessionError.notReady }
+        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+        guard !anchors.isEmpty else { throw MappingSessionError.noSurface }
+        let vertexCount = anchors.reduce(0) { $0 + $1.geometry.vertices.count }
+        let faceCount = anchors.reduce(0) { $0 + $1.geometry.faces.count }
+        guard anchors.count <= MapLimits.maxMeshAnchors,
+              vertexCount <= MapLimits.maxVertices, faceCount <= MapLimits.maxTriangles else {
+            throw MappingSessionError.tooLarge
+        }
+        let geometry = SavedMapGeometry(
+            meshes: try anchors.map { try MapMeshSnapshot.capture($0) },
+            trail: trail.suffix(MapLimits.maxTrailPoints).map { MapPosition(x: $0.x, y: $0.y, z: $0.z) })
+        try geometry.validate()
+        return (geometry, frame.capturedImage, referenceImageOrientation())
+    }
+
+    private func referenceImageOrientation() -> CGImagePropertyOrientation {
+        let orientation = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }?.interfaceOrientation ?? .portrait
+        // Interface and physical device landscape orientations are opposites.
+        switch orientation {
+        case .portrait: return .right
+        case .portraitUpsideDown: return .left
+        case .landscapeLeft: return .down
+        case .landscapeRight: return .up
+        default: return .right
+        }
+    }
+
+    func captureMappingSnapshot() async throws -> MappingSessionCapture {
+        guard supportsMesh else { throw MappingSessionError.unsupported }
+        guard canSaveWorldMap else { throw MappingSessionError.notReady }
+        let generation = sessionGeneration
+        let worldMap: ARWorldMap = try await withCheckedThrowingContinuation { continuation in
+            session.getCurrentWorldMap { map, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let map { continuation.resume(returning: map) }
+                else { continuation.resume(throwing: MappingSessionError.notReady) }
+            }
+        }
+        guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
+        let (geometry, imageBuffer, orientation) = try copyMappingGeometry()
+        // A restored anchor proves a normal frame belongs to this saved world,
+        // not a final frame from the session that ran immediately before loading.
+        // Replacing the marker also prevents old map markers from accumulating.
+        worldMap.anchors.removeAll { $0.name == Self.mapOriginAnchorName }
+        worldMap.anchors.append(ARAnchor(name: Self.mapOriginAnchorName, transform: matrix_identity_float4x4))
+        let data = try await Task.detached(priority: .userInitiated) {
+            let worldData = try NSKeyedArchiver.archivedData(withRootObject: worldMap, requiringSecureCoding: true)
+            guard worldData.count <= MapLimits.maxWorldMapBytes else { throw MappingSessionError.tooLarge }
+            // This reference image helps users recognize the exact capture area.
+            // The only camera buffer retained is this one-shot image, never ARFrame.
+            let source = CIImage(cvPixelBuffer: imageBuffer).oriented(orientation)
+            let scale = min(1.0, 1024.0 / max(source.extent.width, source.extent.height))
+            let image = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+            let preview = CIContext().jpegRepresentation(of: image,
+                colorSpace: CGColorSpaceCreateDeviceRGB(), options: [:])
+            if let preview, preview.count > MapLimits.maxReferenceImageBytes {
+                throw MappingSessionError.tooLarge
+            }
+            return (worldData, preview)
+        }.value
+        guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
+        return MappingSessionCapture(geometry: geometry, worldMapData: data.0, referenceImageData: data.1)
+    }
+
+    nonisolated static func decodeWorldMap(_ data: Data) async throws -> ARWorldMap {
+        guard !data.isEmpty, data.count <= MapLimits.maxWorldMapBytes else { throw MappingSessionError.invalidArchive }
+        return try await Task.detached(priority: .userInitiated) {
+            guard let map = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
+                throw MappingSessionError.invalidArchive
+            }
+            return map
+        }.value
+    }
+
     nonisolated static func describe(_ state: ARCamera.TrackingState) -> String {
         switch state {
         case .normal:
@@ -393,6 +647,27 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             }
         @unknown default:
             return "Unknown"
+        }
+    }
+}
+
+nonisolated struct MappingSessionCapture: Sendable {
+    let geometry: SavedMapGeometry
+    let worldMapData: Data
+    let referenceImageData: Data?
+}
+
+nonisolated enum MappingSessionError: LocalizedError {
+    case unsupported, notReady, noSurface, tooLarge, changedSession, invalidArchive
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupported: return "Mapping requires an ARKit device with a LiDAR scanner, such as iPhone 15 Pro Max."
+        case .notReady: return "Keep scanning slowly until tracking is normal and the room is mapped before saving."
+        case .noSurface: return "No LiDAR surfaces have been captured yet. Point the camera at nearby surfaces and scan again."
+        case .tooLarge: return "This scan is too large to save as one place. Start a separate map for the next area."
+        case .changedSession: return "The scan changed or tracking stopped while saving. Please try saving again."
+        case .invalidArchive: return "The saved localization data could not be opened. The 3D preview may still be available."
         }
     }
 }
