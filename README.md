@@ -18,7 +18,7 @@ iPhones and iPad Pro models support the same mapping APIs.
 
 1. Open `test.xcodeproj` in **Xcode 26.5 or later** and resolve Swift packages.
 2. **Target `test` → General → Supported Destinations**: keep **iPhone** / **iPad**
-   only (macOS & visionOS removed — ARKit world tracking is iOS-only). *(done)*
+   only (this app uses the iOS/iPadOS ARKit configuration). *(done)*
 3. **Signing & Capabilities → Team**: select your Apple ID / team.
 4. **Info**: `Privacy - Camera Usage Description` is set (`NSCameraUsageDescription`). *(done)*
 5. Select your **iPhone 15 Pro Max** as the run destination and press **Run**.
@@ -39,8 +39,9 @@ existing **Developer** tools.
 2. Tap **Save Place**, name the scan, and wait for confirmation. **Save Changes**
    updates that place; **New Map** starts a separate scan after confirming that
    unsaved work can be discarded.
-3. Open **Saved Places** to pause the camera and browse local scans. Drag to orbit,
-   pinch to zoom, use two fingers to pan, toggle wireframe, or tap **Fit map**.
+3. Open **Saved Places** to pause the camera and browse local scans. Tap a saved
+   place to open its 3D viewer. Drag to orbit, pinch to zoom, use two fingers to
+   pan, toggle wireframe, or tap **Fit map**.
    Each row also offers rename and delete. Viewing works away from the location.
 4. At the original location, open a saved place and choose **Revisit & Continue
    Mapping**. Match its reference photo. Stored surfaces appear in the camera
