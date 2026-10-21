@@ -2,9 +2,9 @@
 
 An educational **mapping and sensor laboratory** for the iPhone's LiDAR scanner,
 camera, and motion tracking. Map and save places automatically, revisit their
-camera-coloured surfaces and photos in 3D, or return in person to relocalize and
-follow a previously walked path. Local text recognition retains signs and text
-observations alongside each map. The app
+camera-coloured surfaces in 3D and captured photos in a gallery, or return in
+person to relocalize and follow a previously walked path. Local text recognition
+retains signs and text observations alongside each map. The app
 also contains developer diagnostics and experimental assistive feedback; it is
 not a production navigation app.
 
@@ -121,7 +121,8 @@ sheet so you can AirDrop/save to your Mac:
 - `camera_poses.csv` — pose samples (position + quaternion)
 - `point_cloud.ply` — sampled RGB point cloud (opens in MeshLab, Blender, etc.)
 
-Recording only happens on an explicit tap — never continuously.
+This three-second diagnostic export recording starts only on an explicit tap.
+Automatic mapping, camera keyframes, and local OCR are separate foreground features.
 
 ---
 

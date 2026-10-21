@@ -93,7 +93,9 @@ mesh vertex ordering. Unseen vertices remain visibly uncolored.
 
 Camera keyframes are separate JPEG observations with their world pose,
 intrinsics, dimensions, and capture time. They retain native sensor orientation;
-the longest side is reduced to 1,024 pixels and intrinsics scale with it. A new
+the longest side is reduced to 1,024 pixels and intrinsics scale with it.
+JPEG EXIF metadata records the capture orientation so the gallery presents an upright
+image without rotating its calibrated pixel coordinates. A new
 view is eligible after six seconds and sufficient camera translation or
 rotation. This is sampled photographic coverage, not full-resolution video or
 a texture atlas. The offline viewer offers captured vertex colors, surfaces,

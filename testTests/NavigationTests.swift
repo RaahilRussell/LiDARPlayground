@@ -221,7 +221,8 @@ struct NavigationTests {
             edges: [NavigationEdge(from: nodes[0].id, to: nodes[1].id)], startNodeID: nodes[0].id)
         var recorder = NavigationRecorder(graph: graph)
         #expect(recorder.capacityReached)
-        #expect(!recorder.record(pose(), now: 10))
+        let recorded = recorder.record(pose(), now: 10)
+        #expect(!recorded)
         #expect(recorder.graph == graph)
         let route = try NavigationRouter.route(graph: recorder.graph, from: nodes[0].id,
                                                to: nodes[1].id, name: "Existing destination")
