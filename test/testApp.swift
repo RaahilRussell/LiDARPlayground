@@ -40,11 +40,19 @@ struct testApp: App {
                     perception.configure(with: ar)
                     mapping.attach(perception: perception)
                     mapping.navigation.configureSpeech(perception.speech)
-                    mapping.navigation.onRouteWillStart = { perception.feedback.stop() }
-                    perception.guidance.onWillStart = { mapping.navigation.cancelNavigation() }
+                    mapping.navigation.onRouteWillStart = { perception.beginNavigationSpeech() }
+                    perception.guidance.onWillStart = {
+                        mapping.navigation.cancelNavigation()
+                        perception.endNavigationSpeech()
+                    }
+                    if scenePhase == .active { perception.handleEnteredForeground() }
+                    else { perception.handleLeftForeground() }
                     Task {
                         await mapping.setForegroundActive(scenePhase == .active)
                     }
+                }
+                .onChange(of: mapping.navigation.routeActive) { _, active in
+                    if !active { perception.endNavigationSpeech() }
                 }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -52,6 +60,7 @@ struct testApp: App {
             // leave the foreground, so we mirror that and resume on return.
             switch phase {
             case .active:
+                perception.handleEnteredForeground()
                 Task { await mapping.setForegroundActive(true) }
             case .background, .inactive:
                 perception.handleLeftForeground()

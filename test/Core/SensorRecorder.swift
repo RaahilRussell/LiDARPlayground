@@ -43,6 +43,7 @@ final class SensorRecorder {
         statusText = "Recording…"
 
         let generation = manager.sessionGeneration
+        let pauseRevision = manager.pauseRevision
         let start = CACurrentMediaTime()
         var lastSampleTimestamp: TimeInterval = -.infinity
         while CACurrentMediaTime() - start < duration {
@@ -50,13 +51,13 @@ final class SensorRecorder {
                 abortRecording("Recording cancelled.")
                 return
             }
-            guard recordingSessionIsValid(manager: manager, generation: generation) else {
+            guard recordingSessionIsValid(manager: manager, generation: generation, pauseRevision: pauseRevision) else {
                 abortRecording("Recording stopped because tracking or the map changed. Try again.")
                 return
             }
             // Polling can see the same frame twice. Each exported sample must
             // correspond to a new capture, rather than repeating a paused pose.
-            if let frame = currentRecordingFrame(manager: manager, generation: generation),
+            if let frame = currentRecordingFrame(manager: manager, generation: generation, pauseRevision: pauseRevision),
                frame.timestamp > lastSampleTimestamp {
                 poseSamples.append((frame.timestamp, frame.camera.transform))
                 lastSampleTimestamp = frame.timestamp
@@ -70,19 +71,18 @@ final class SensorRecorder {
             }
         }
 
-        // currentFrame can advance just before its main-queue delegate callback.
-        // Briefly wait for an accepted frame instead of capturing that transient
-        // unaccepted frame or treating it as a session failure.
+        // Briefly retry if tracking or a fresh final frame is momentarily absent.
+        // The shared gate allows currentFrame to lead its delegate callback.
         for attempt in 0..<6 {
             guard !Task.isCancelled else {
                 abortRecording("Recording cancelled.")
                 return
             }
-            guard recordingSessionIsValid(manager: manager, generation: generation) else {
+            guard recordingSessionIsValid(manager: manager, generation: generation, pauseRevision: pauseRevision) else {
                 abortRecording("Recording stopped because tracking or the map changed. Try again.")
                 return
             }
-            if let frame = currentRecordingFrame(manager: manager, generation: generation) {
+            if let frame = currentRecordingFrame(manager: manager, generation: generation, pauseRevision: pauseRevision) {
                 capture(frame: frame)
                 hasRecording = !poseSamples.isEmpty && metadata != nil
                 progress = hasRecording ? 1 : 0
@@ -99,20 +99,17 @@ final class SensorRecorder {
         abortRecording("No fresh frame was available to finish the recording. Try again.")
     }
 
-    private func recordingSessionIsValid(manager: ARSessionManager, generation: Int) -> Bool {
+    private func recordingSessionIsValid(manager: ARSessionManager, generation: Int, pauseRevision: Int) -> Bool {
         guard manager.sessionGeneration == generation, manager.runState == .running,
+              manager.pauseRevision == pauseRevision,
               manager.trackingIsNormal, !manager.isRelocalizing else { return false }
-        let age = CACurrentMediaTime() - manager.lastFrameTimestamp
-        return age.isFinite && age >= 0 && age < 0.5
+        return manager.isCurrentObservation(timestamp: manager.lastFrameTimestamp)
     }
 
-    private func currentRecordingFrame(manager: ARSessionManager, generation: Int) -> ARFrame? {
-        guard recordingSessionIsValid(manager: manager, generation: generation),
+    private func currentRecordingFrame(manager: ARSessionManager, generation: Int, pauseRevision: Int) -> ARFrame? {
+        guard recordingSessionIsValid(manager: manager, generation: generation, pauseRevision: pauseRevision),
               let frame = manager.session.currentFrame,
-              frame.timestamp == manager.lastFrameTimestamp,
-              case .normal = frame.camera.trackingState else { return nil }
-        let age = CACurrentMediaTime() - frame.timestamp
-        guard age.isFinite, age >= 0, age < 0.5 else { return nil }
+              manager.isCurrentWorldFrame(frame) else { return nil }
         return frame
     }
 

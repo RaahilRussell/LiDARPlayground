@@ -12,6 +12,7 @@ struct DepthLabView: View {
     @Environment(ARSessionManager.self) private var ar
     @Environment(PerceptionSystem.self) private var perception
     private var engine: DepthRefinementEngine { perception.depth }
+    @State private var pipelineConsumer = UUID()
 
     var body: some View {
         ZStack {
@@ -31,8 +32,8 @@ struct DepthLabView: View {
                 }
             }
         }
-        .onAppear { if ar.runState == .idle { ar.start() }; engine.start() }
-        .onDisappear { engine.stop() }
+        .onAppear { perception.acquire(.depth, for: pipelineConsumer) }
+        .onDisappear { perception.release(pipelineConsumer) }
     }
 
     private var grid: some View {

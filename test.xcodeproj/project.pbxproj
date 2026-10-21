@@ -11,6 +11,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		CA1000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0478CB8530864F5A0090BBCD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0478CB8C30864F5A0090BBCD;
+			remoteInfo = test;
+		};
 		0478CBB130864F5A0090BBCD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 0478CB8530864F5A0090BBCD /* Project object */;
@@ -21,11 +28,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		CA1000010000000000000002 /* testUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = testUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0478CB8D30864F5A0090BBCD /* test.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = test.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		0478CBB230864F5A0090BBCD /* testTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = testTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		CA1000010000000000000003 /* testUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = testUITests;
+			sourceTree = "<group>";
+		};
 		0478CB8F30864F5A0090BBCD /* test */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = test;
@@ -39,6 +52,12 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		CA1000010000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		0478CB8A30864F5A0090BBCD /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -62,6 +81,7 @@
 			children = (
 				0478CB8F30864F5A0090BBCD /* test */,
 				0478CBB330864F5A0090BBCD /* testTests */,
+				CA1000010000000000000003 /* testUITests */,
 				0478CB8E30864F5A0090BBCD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -71,6 +91,7 @@
 			children = (
 				0478CB8D30864F5A0090BBCD /* test.app */,
 				0478CBB230864F5A0090BBCD /* testTests.xctest */,
+				CA1000010000000000000002 /* testUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -78,6 +99,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		CA1000010000000000000007 /* testUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CA1000010000000000000009 /* Build configuration list for PBXNativeTarget "testUITests" */;
+			buildPhases = (
+				CA1000010000000000000005 /* Sources */,
+				CA1000010000000000000004 /* Frameworks */,
+				CA1000010000000000000006 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = (
+				CA1000010000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				CA1000010000000000000003 /* testUITests */,
+			);
+			name = testUITests;
+			packageProductDependencies = ();
+			productName = testUITests;
+			productReference = CA1000010000000000000002 /* testUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		0478CB8C30864F5A0090BBCD /* test */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 0478CB9830864F5B0090BBCD /* Build configuration list for PBXNativeTarget "test" */;
@@ -134,6 +176,10 @@
 				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
+					CA1000010000000000000007 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 0478CB8C30864F5A0090BBCD;
+					};
 					0478CB8C30864F5A0090BBCD = {
 						CreatedOnToolsVersion = 26.6;
 					};
@@ -162,11 +208,18 @@
 			targets = (
 				0478CB8C30864F5A0090BBCD /* test */,
 				0478CBB730864F5A0090BBCD /* testTests */,
+				CA1000010000000000000007 /* testUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		CA1000010000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		0478CB8B30864F5A0090BBCD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -184,6 +237,12 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		CA1000010000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		0478CB8930864F5A0090BBCD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -201,6 +260,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		CA1000010000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0478CB8C30864F5A0090BBCD /* test */;
+			targetProxy = CA1000010000000000000001 /* PBXContainerItemProxy */;
+		};
 		0478CBB830864F5A0090BBCD /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 0478CB8C30864F5A0090BBCD /* test */;
@@ -209,6 +273,46 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		CA100001000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 28N3GP9MWX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.raahilrussell.lidarplaygroundUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = test;
+			};
+			name = Debug;
+		};
+		CA100001000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 28N3GP9MWX;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.raahilrussell.lidarplaygroundUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = test;
+			};
+			name = Release;
+		};
 		0478CB9630864F5B0090BBCD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -462,6 +566,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		CA1000010000000000000009 /* Build configuration list for PBXNativeTarget "testUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CA100001000000000000000A /* Debug */,
+				CA100001000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		0478CB8830864F5A0090BBCD /* Build configuration list for PBXProject "test" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

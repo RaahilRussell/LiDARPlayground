@@ -1,86 +1,127 @@
-//
-//  RootView.swift
-//  test
-//
-//  Top-level UI: a persistent status strip above a five-tab developer console.
-//
-
 import SwiftUI
 
-enum AppSection: String, CaseIterable, Identifiable {
-    case sensors = "Sensors"
-    case ai = "AI Perception"
-    var id: String { rawValue }
+enum LiDARTool: String, CaseIterable, Identifiable {
+    case depth = "Depth"
+    case pointCloud = "Point Cloud"
+    case mesh = "3D Mesh"
+    case data = "Data"
+    var id: String {
+        switch self {
+        case .depth: "depth"
+        case .pointCloud: "pointCloud"
+        case .mesh: "mesh"
+        case .data: "data"
+        }
+    }
 }
 
+enum VisionTool: String, CaseIterable, Identifiable {
+    case live = "Live AI"
+    case fused = "Fused"
+    case depthLab = "Depth Lab"
+    case fusion = "Fusion"
+    case haptics = "Haptics"
+    case benchmarks = "Benchmarks"
+    case inspector = "Inspector"
+    var id: String {
+        switch self {
+        case .live: "live"
+        case .fused: "fused"
+        case .depthLab: "depthLab"
+        case .fusion: "fusion"
+        case .haptics: "haptics"
+        case .benchmarks: "benchmarks"
+        case .inspector: "inspector"
+        }
+    }
+}
+
+/// Selection lives in AppRootView so Maps and Assist do not reset the current tool.
 struct RootView: View {
-    @Environment(ARSessionManager.self) private var ar
-    @State private var section: AppSection = .ai
+    let mode: AppMode
+    @Binding var lidarTool: LiDARTool
+    @Binding var visionTool: VisionTool
 
     var body: some View {
         VStack(spacing: 0) {
             StatusStripView()
-            Picker("Section", selection: $section) {
-                ForEach(AppSection.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Theme.panel.opacity(0.95))
-
-            switch section {
-            case .sensors: SensorsTabView()
-            case .ai: AIPerceptionTabView()
+            switch mode {
+            case .camera:
+                CameraTabView()
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("screen.camera")
+            case .lidar:
+                ToolSelector(items: LiDARTool.allCases, selection: $lidarTool,
+                             prefix: "lidar", title: { $0.rawValue })
+                lidarContent
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("screen.lidar.\(lidarTool.id)")
+            case .vision:
+                ToolSelector(items: VisionTool.allCases, selection: $visionTool,
+                             prefix: "vision", title: { $0.rawValue })
+                visionContent
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("screen.vision.\(visionTool.id)")
+            case .mapping, .wearer:
+                EmptyView()
             }
         }
         .background(Theme.background.ignoresSafeArea())
         .tint(Theme.accent)
-        .onAppear {
-            // Auto-start once so the first screen is live; the user can pause/reset.
-            if ar.runState == .idle { ar.start() }
+    }
+
+    @ViewBuilder private var lidarContent: some View {
+        switch lidarTool {
+        case .depth: DepthTabView()
+        case .pointCloud: PointCloudTabView()
+        case .mesh: MeshTabView()
+        case .data: DataInspectorTabView()
+        }
+    }
+
+    @ViewBuilder private var visionContent: some View {
+        switch visionTool {
+        case .live: LiveAICameraView()
+        case .fused: FusedPerceptionView()
+        case .depthLab: DepthLabView()
+        case .fusion: SpatialFusionView()
+        case .haptics: HapticLabView()
+        case .benchmarks: BenchmarksView()
+        case .inspector: PerceptionInspectorView()
         }
     }
 }
 
-/// The original five LiDAR sensor tabs — unchanged behavior.
-struct SensorsTabView: View {
-    var body: some View {
-        TabView {
-            CameraTabView()
-                .tabItem { Label("Camera", systemImage: "camera.fill") }
-            DepthTabView()
-                .tabItem { Label("Depth", systemImage: "square.3.layers.3d") }
-            PointCloudTabView()
-                .tabItem { Label("Point Cloud", systemImage: "circle.grid.3x3.fill") }
-            MeshTabView()
-                .tabItem { Label("3D Mesh", systemImage: "cube.transparent") }
-            DataInspectorTabView()
-                .tabItem { Label("Data", systemImage: "tablecells") }
-        }
-        .tint(Theme.accent)
-    }
-}
+/// Every tool has a named button, including those previously hidden under More.
+private struct ToolSelector<Item: Identifiable & Hashable>: View where Item.ID == String {
+    @ScaledMetric(relativeTo: .subheadline) private var rowHeight: CGFloat = 52
+    let items: [Item]
+    @Binding var selection: Item
+    let prefix: String
+    let title: (Item) -> String
 
-/// The new AI Perception section (Phase 1–8).
-struct AIPerceptionTabView: View {
     var body: some View {
-        TabView {
-            FusedPerceptionView()
-                .tabItem { Label("Fused", systemImage: "camera.metering.multispot") }
-            LiveAICameraView()
-                .tabItem { Label("Live AI", systemImage: "camera.viewfinder") }
-            DepthLabView()
-                .tabItem { Label("Depth Lab", systemImage: "slider.horizontal.3") }
-            SpatialFusionView()
-                .tabItem { Label("Fusion", systemImage: "cube.transparent.fill") }
-            HapticLabView()
-                .tabItem { Label("Haptics", systemImage: "waveform") }
-            BenchmarksView()
-                .tabItem { Label("Bench", systemImage: "speedometer") }
-            PerceptionInspectorView()
-                .tabItem { Label("Inspector", systemImage: "scope") }
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(items) { item in
+                    Button { selection = item } label: {
+                        Text(title(item)).font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 13).frame(minHeight: 44)
+                            .foregroundStyle(selection == item ? Theme.accent : .primary)
+                            .background(selection == item ? Theme.accent.opacity(0.15) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(selection == item ? .isSelected : [])
+                    .accessibilityIdentifier("\(prefix).tool.\(item.id)")
+                }
+            }
+            .padding(.horizontal, 10)
         }
-        .tint(Theme.accent)
+        .scrollIndicators(.visible)
+        .frame(height: rowHeight)
+        .accessibilityIdentifier("\(prefix).tools")
+        .background(Theme.panel.opacity(0.95))
     }
 }
 

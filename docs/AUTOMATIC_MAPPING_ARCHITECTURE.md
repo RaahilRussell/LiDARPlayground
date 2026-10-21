@@ -29,7 +29,8 @@ every 20 seconds; transient tracking failures use a five-second retry backoff.
 Saving requires normal tracking, extending/mapped world-map quality, a fresh
 accepted frame, and nonempty LiDAR surfaces. Save/load/delete/rename operations
 are serialized. Operation tokens and session generations reject stale work.
-Persistent storage errors stop automatic mapping and expose a Resume retry.
+Persistent storage errors suspend automatic save retries and expose Retry Saving.
+They do not pause the shared camera, depth, computer vision, or live mesh.
 
 The existing atomic manifest/revision store remains the durable boundary. A
 checkpoint includes geometry, calibrated photos, navigation, text, signs, a
@@ -54,9 +55,11 @@ protect in-memory work and decoding, not the number of saved places on disk.
 For rollover, the coordinator freezes photo/text intake, copies a final valid
 geometry snapshot, temporarily disables only scene reconstruction, and commits
 the archive. The same camera/IMU/depth session and path recording continue.
-The final immutable capture remains in memory if writing fails; automatic
-mapping then pauses visibly and Resume retries that capture. Only a successful
-durable save permits reconstruction/photo/text caches to rotate.
+The final immutable capture remains in memory if writing fails. Live scene
+reconstruction is re-enabled in the same world, while bounded photo/text intake
+waits for Retry Saving. Retry refreshes the checkpoint with newly observed
+surfaces and retains earlier chunks. Only a successful durable save permits
+reconstruction/photo/text caches to rotate.
 
 Reconstruction restarts using `resetSceneReconstruction`, without `resetTracking`
 or `removeExistingAnchors`. Apple specifies that this option removes the mesh
@@ -146,10 +149,14 @@ can reduce coverage or create false positives.
 
 ## Verification boundary
 
-Windows syntax parsing and source review are available locally. The new
-automatic/color/navigation/OCR changes require their own unsigned iPhone build
-and simulator test result; the earlier 77-test result covers the prior mapping
-revision. Current evidence and physical acceptance checks are recorded in
+Windows syntax parsing and source review were supplemented by Apple SDK
+compilation and simulator tests in GitHub macOS CI. Follow-up code head
+`9b0c1a235e523d324e705ca558880e7b8822c46d` passed the unsigned iPhone build and
+**123 tests in 14 suites in 6.388 seconds** in
+[run 39555636456](https://github.com/RaahilRussell/LiDARPlayground/actions/runs/39555636456).
+This is the verified code for [PR #3](https://github.com/RaahilRussell/LiDARPlayground/pull/3);
+the earlier 77-test result covers the prior saved-place implementation. Remaining
+compiler warnings, historical evidence, and physical acceptance checks are recorded in
 [DEVICE_VALIDATION.md](DEVICE_VALIDATION.md). No physical iPhone measurements of
 tracking drift, relocalization, color alignment, OCR quality, route safety,
 battery, or sustained thermal behavior have been performed in this workspace.

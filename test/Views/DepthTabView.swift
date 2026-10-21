@@ -24,6 +24,7 @@ struct DepthTabView: View {
     @State private var showConfidence = false
     @State private var filterLowConfidence = false
     @State private var rangeMax: Float = 5.0
+    @State private var processingGate = SensorFrameProcessingGate()
 
     // Measurement probe (normalized buffer coordinates, origin top-left landscape).
     @State private var probePoint = CGPoint(x: 0.5, y: 0.5)
@@ -49,7 +50,7 @@ struct DepthTabView: View {
 
     /// Restart the loop when a user toggle changes what we render.
     private var taskKey: String {
-        "\(showConfidence)-\(filterLowConfidence)-\(rangeMax)-\(ar.depthSource.rawValue)"
+        "\(showConfidence)-\(filterLowConfidence)-\(rangeMax)-\(ar.depthSource.rawValue)-\(ar.sessionGeneration)-\(ar.runState.rawValue)"
     }
 
     // MARK: - Heatmap + probe
@@ -62,11 +63,16 @@ struct DepthTabView: View {
                 if let heatmap {
                     Image(decorative: heatmap, scale: 1, orientation: .right)
                         .resizable()
-                        .scaledToFit()
+                        .frame(width: fitted.width, height: fitted.height)
+                        .position(x: fitted.midX, y: fitted.midY)
                 } else {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 8) {
+                        if ar.runState == .running { ProgressView() }
+                        Text(ar.runState == .running ? "Waiting for live LiDAR depth" : "Camera \(ar.runState.rawValue.lowercased())")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                crosshair(in: fitted)
+                if heatmap != nil { crosshair(in: fitted) }
             }
             .contentShape(Rectangle())
             .gesture(
@@ -92,28 +98,15 @@ struct DepthTabView: View {
     }
 
     private func updateProbe(location: CGPoint, fitted: CGRect) {
-        guard fitted.contains(location) else { return }
-        let dx = (location.x - fitted.minX) / fitted.width
-        let dy = (location.y - fitted.minY) / fitted.height
-        // invert 90° CW: bx = dy, by = 1 - dx
-        probePoint = CGPoint(x: dy, y: 1 - dx)
+        guard let point = DepthImageLayout.rawProbe(at: location, in: fitted) else { return }
+        probePoint = point
     }
 
     /// Aspect-fit rect for the portrait-oriented (3:4) depth image.
     private func fittedRect(in size: CGSize) -> CGRect {
         guard let heatmap else { return CGRect(origin: .zero, size: size) }
-        // After the .right orientation the displayed image is height×width.
-        let imgAspect = CGFloat(heatmap.height) / CGFloat(heatmap.width) // e.g. 192/256
-        let boxAspect = size.width / size.height
-        var w = size.width, h = size.height
-        if imgAspect > boxAspect { // image relatively taller -> limit by height
-            h = size.height
-            w = h * imgAspect
-        } else {
-            w = size.width
-            h = w / imgAspect
-        }
-        return CGRect(x: (size.width - w) / 2, y: (size.height - h) / 2, width: w, height: h)
+        return DepthImageLayout.fittedRect(
+            image: CGSize(width: heatmap.height, height: heatmap.width), viewport: size)
     }
 
     // MARK: - Controls
@@ -232,40 +225,77 @@ struct DepthTabView: View {
 
     // MARK: - Processing loop
 
+    private struct ProcessingOptions: Equatable {
+        let showConfidence: Bool
+        let filterLowConfidence: Bool
+        let rangeMax: Float
+        let source: DepthSource
+    }
+
+    private var processingOptions: ProcessingOptions {
+        ProcessingOptions(showConfidence: showConfidence,
+                          filterLowConfidence: filterLowConfidence,
+                          rangeMax: rangeMax, source: ar.depthSource)
+    }
+
+    private struct ProcessingInput {
+        let generation: Int
+        let timestamp: TimeInterval
+        let depth: CVPixelBuffer
+        let confidence: CVPixelBuffer?
+    }
+
+    /// Copy only required buffers so the full ARFrame is released before await.
+    private func processingInput(source: DepthSource) -> ProcessingInput? {
+        guard let frame = ar.session.currentFrame, ar.isCurrentFrame(frame),
+              let depth = selectedDepth(frame, source: source) else { return nil }
+        return ProcessingInput(generation: ar.sessionGeneration, timestamp: frame.timestamp,
+                               depth: depth.depthMap, confidence: depth.confidenceMap)
+    }
+
     private func runProcessingLoop() async {
+        clearReadings()
         while !Task.isCancelled {
-            if ar.runState == .running,
-               let frame = ar.session.currentFrame,
-               let depth = selectedDepth(frame) {
-                let depthMap = depth.depthMap
-                let confMap = depth.confidenceMap
-                let mode: HeatmapMode = showConfidence ? .confidence : .depth(range: 0...rangeMax)
-                let minConf: ARConfidenceLevel? = filterLowConfidence ? .medium : nil
-
-                let result = await Self.process(depth: depthMap, confidence: confMap,
-                                                mode: mode, minConf: minConf)
-                heatmap = result.image
-                stats = result.stats
-
-                if let p = probeMeters(depth: depthMap, at: probePoint) {
-                    probeMeters = p
-                } else {
-                    probeMeters = nil
-                }
-                probeConfidence = confMap.flatMap {
-                    DepthProcessing.sampleConfidence($0, normalizedPoint: probePoint)
-                }
-            }
+            await processNextFrame()
             try? await Task.sleep(for: .milliseconds(80))
         }
+    }
+
+    private func processNextFrame() async {
+        // A canceled predecessor still owns this gate until its worker finishes.
+        guard let token = processingGate.begin() else { return }
+        defer { processingGate.finish(token) }
+        let options = processingOptions
+        guard let input = processingInput(source: options.source) else {
+            clearReadings(); return
+        }
+        let mode: HeatmapMode = options.showConfidence ? .confidence : .depth(range: 0...options.rangeMax)
+        let minConf: ARConfidenceLevel? = options.filterLowConfidence ? .medium : nil
+        let result = await Self.process(depth: input.depth, confidence: input.confidence,
+                                        mode: mode, minConf: minConf)
+        guard !Task.isCancelled, options == processingOptions else { return }
+        guard input.generation == ar.sessionGeneration,
+              ar.isCurrentObservation(timestamp: input.timestamp) else {
+            clearReadings(); return
+        }
+        heatmap = result.image
+        stats = result.stats
+        probeMeters = probeMeters(depth: input.depth, at: probePoint)
+        probeConfidence = input.confidence.flatMap {
+            DepthProcessing.sampleConfidence($0, normalizedPoint: probePoint)
+        }
+    }
+
+    private func clearReadings() {
+        heatmap = nil; stats = nil; probeMeters = nil; probeConfidence = nil
     }
 
     private func probeMeters(depth: CVPixelBuffer, at p: CGPoint) -> Float? {
         DepthProcessing.sampleDistance(depth: depth, normalizedPoint: p)
     }
 
-    private func selectedDepth(_ frame: ARFrame) -> ARDepthData? {
-        switch ar.depthSource {
+    private func selectedDepth(_ frame: ARFrame, source: DepthSource) -> ARDepthData? {
+        switch source {
         case .smoothed: return frame.smoothedSceneDepth ?? frame.sceneDepth
         case .raw: return frame.sceneDepth ?? frame.smoothedSceneDepth
         }

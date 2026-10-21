@@ -9,6 +9,7 @@
 //
 
 import Observation
+import Foundation
 
 @MainActor
 @Observable
@@ -30,6 +31,12 @@ final class PerceptionSystem {
 
     private(set) var provider: ARSensorProvider?
     private var configured = false
+    private var foregroundActive = true
+    private var resumeProximity = false
+    private var demands = PerceptionPipelineDemand()
+    private let guidanceConsumer = UUID()
+    private let mappingConsumer = UUID()
+    private var mappingHasStarted = false
     private(set) var mappingPerceptionRunning = false
 
     init() {
@@ -43,6 +50,53 @@ final class PerceptionSystem {
                                   proximity: proximity,
                                   proximityDriver: proximityDriver, spatial: spatial,
                                   fusion: fusion, vision: vision, hazardMap: hazardMap)
+        guidance.activatePipelines = { [weak self] in
+            guard let self else { return }
+            if !self.vision.isEnabled { self.vision.targetHz = 6 }
+            if !self.proximityDriver.running { self.proximityDriver.source = .fusedObjects }
+            self.proximityDriver.demoMode = false
+            self.acquire(.guidance, for: self.guidanceConsumer)
+        }
+        guidance.deactivatePipelines = { [weak self] in
+            guard let self else { return }
+            self.release(self.guidanceConsumer)
+        }
+    }
+
+    func acquire(_ pipelines: PerceptionPipelines, for consumer: UUID) {
+        let pipelines = pipelines.contains(.proximity) ? pipelines.union(.hazards) : pipelines
+        // A benchmark restores its saved inference configuration on cancellation.
+        // Finish that restoration before the incoming screen requests engines.
+        profiler.cancel(reason: "Started another perception feature")
+        var running: PerceptionPipelines = []
+        if vision.isEnabled { running.insert(.vision) }
+        if fusion.isRunning { running.insert(.fusion) }
+        if spatial.isRunning { running.insert(.spatial) }
+        if proximityDriver.running || resumeProximity { running.insert(.proximity) }
+        if depth.isRunning { running.insert(.depth) }
+        if hazardMap.isRunning { running.insert(.hazards) }
+        apply(demands.acquire(pipelines, for: consumer, running: running))
+    }
+
+    func release(_ consumer: UUID) { apply(demands.release(consumer)) }
+
+    private func apply(_ change: PerceptionPipelineDemand.Changes) {
+        if change.stop.contains(.proximity) {
+            resumeProximity = false; proximityDriver.stop(); proximity.reset()
+        }
+        if change.stop.contains(.spatial) { spatial.stop() }
+        if change.stop.contains(.fusion) { fusion.stop() }
+        if change.stop.contains(.vision) { vision.stop() }
+        if change.stop.contains(.depth) { depth.stop() }
+        if change.stop.contains(.hazards) { hazardMap.stop() }
+        if change.start.contains(.vision) { vision.start() }
+        if change.start.contains(.fusion) { fusion.start() }
+        if change.start.contains(.spatial) { spatial.start() }
+        if change.start.contains(.depth) { depth.start() }
+        if change.start.contains(.hazards) { hazardMap.start() }
+        if change.start.contains(.proximity) {
+            if foregroundActive { proximityDriver.start() } else { resumeProximity = true }
+        }
     }
 
     /// Connects the perception engines to the one and only ARSession owner.
@@ -65,37 +119,35 @@ final class PerceptionSystem {
     /// Starts the model/depth/fusion stack alongside MappingCoordinator. Both
     /// consumers read the same ARSession; mapping never creates a second camera.
     func startForMapping() {
-        guard configured else { return }
+        guard configured, !mappingPerceptionRunning else { return }
         mappingPerceptionRunning = true
         // Mapping is the durable pass, so prefer the highest bundled detector
         // rather than the low-latency preview variant used by the live console.
-        vision.selectedVariant = .medium
-        vision.start()
-        depth.start()
-        fusion.start()
-        spatial.start()
-        hazardMap.start()
+        if !mappingHasStarted, !vision.isEnabled { vision.selectedVariant = .medium }
+        mappingHasStarted = true
+        acquire(.mapping, for: mappingConsumer)
     }
 
-    /// Releases GPU/Metal-backed work when iOS backgrounds the app. The AR
-    /// session is paused by ARSessionManager; these loops must be paused too.
+    /// Releases mapping's pipeline demand when mapping is paused or backgrounded.
+    /// Other active tools keep their independently requested engines.
     func stopForMapping() {
+        guard mappingPerceptionRunning else { return }
         mappingPerceptionRunning = false
-        hazardMap.stop()
-        spatial.stop()
-        fusion.stop()
-        depth.stop()
-        vision.stop()
+        release(mappingConsumer)
     }
 
     /// Leaving the foreground invalidates measurements and live inputs: cancel the
     /// profiler (which restores inference configuration) and pause the inspector.
     func handleLeftForeground() {
+        guard foregroundActive else { return }
+        foregroundActive = false
+        guidance.setForegroundActive(false)
         profiler.cancel(reason: "App left the foreground")
         inspector.pause()
-        guidance.stop()
-        stopForMapping()
+        resumeProximity = proximityDriver.running
+        proximityDriver.stop()
         vision.clearResults()
+        depth.clearResults()
         fusion.clearResults()
         spatial.clearResults()
         hazardMap.clearResults()
@@ -103,14 +155,18 @@ final class PerceptionSystem {
         speech.stopAll()
     }
 
-    /// Stops feedback for route/map transitions while leaving the shared
-    /// perception pipeline alive for mapping.
-    func pauseForMapping() {
-        profiler.cancel(reason: "Opened Maps")
-        inspector.pause()
-        proximity.reset()
-        feedback.stop()
-        spatialCue.stop()
+    func handleEnteredForeground() {
+        foregroundActive = true
+        guidance.setForegroundActive(true)
+        if resumeProximity { proximityDriver.start(); resumeProximity = false }
+    }
+
+    /// Starting route speech must not disable CV, LiDAR processing or the
+    /// proximity feedback that the user enabled in another feature.
+    func beginNavigationSpeech() {
+        guidance.setNavigationSpeechActive(true)
         speech.stopAll()
     }
+
+    func endNavigationSpeech() { guidance.setNavigationSpeechActive(false) }
 }

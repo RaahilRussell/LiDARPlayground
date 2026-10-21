@@ -28,7 +28,7 @@ struct DataInspectorTabView: View {
             .padding(12)
         }
         .background(Theme.background)
-        .task { await snapshotLoop() }
+        .task(id: "\(ar.sessionGeneration)-\(ar.runState.rawValue)") { await snapshotLoop() }
         .sheet(isPresented: $showShare) {
             if !shareURLs.isEmpty { ShareSheet(items: shareURLs) }
         }
@@ -40,21 +40,27 @@ struct DataInspectorTabView: View {
         Panel {
             VStack(alignment: .leading, spacing: 10) {
                 sectionTitle("Position & Motion", systemImage: "location.fill")
-                HStack {
-                    Stat(label: "X (m)", value: fmt(ar.cameraPosition.x))
-                    Stat(label: "Y (m)", value: fmt(ar.cameraPosition.y))
-                    Stat(label: "Z (m)", value: fmt(ar.cameraPosition.z))
-                }
-                HStack {
-                    Stat(label: "Pitch°", value: fmt(ar.cameraEulerDegrees.x))
-                    Stat(label: "Yaw°", value: fmt(ar.cameraEulerDegrees.y))
-                    Stat(label: "Roll°", value: fmt(ar.cameraEulerDegrees.z))
-                }
-                HStack {
-                    Stat(label: "Tracking", value: ar.trackingDescription,
-                         tint: ar.trackingIsNormal ? Theme.good : Theme.warn)
-                    Stat(label: "Displacement", value: fmt(ar.displacementMeters) + " m",
-                         tint: Theme.accent)
+                if worldPoseIsLive {
+                    HStack {
+                        Stat(label: "X (m)", value: fmt(ar.cameraPosition.x))
+                        Stat(label: "Y (m)", value: fmt(ar.cameraPosition.y))
+                        Stat(label: "Z (m)", value: fmt(ar.cameraPosition.z))
+                    }
+                    HStack {
+                        Stat(label: "Pitch°", value: fmt(ar.cameraEulerDegrees.x))
+                        Stat(label: "Yaw°", value: fmt(ar.cameraEulerDegrees.y))
+                        Stat(label: "Roll°", value: fmt(ar.cameraEulerDegrees.z))
+                    }
+                    HStack {
+                        Stat(label: "Tracking", value: ar.trackingDescription,
+                             tint: ar.trackingIsNormal ? Theme.good : Theme.warn)
+                        Stat(label: "Displacement", value: fmt(ar.displacementMeters) + " m",
+                             tint: Theme.accent)
+                    }
+                } else {
+                    Label("Live position is unavailable while the camera is paused or tracking is being restored.",
+                          systemImage: "location.slash")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 trailPlot
                 explanation("These coordinates are LOCAL to ARKit — metres measured from wherever the session started, not GPS. X is right, Y is up, Z is toward you; forward is −Z. Restarting tracking resets the origin.")
@@ -64,7 +70,7 @@ struct DataInspectorTabView: View {
 
     private var trailPlot: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("MOVEMENT TRAIL (top-down X/Z)")
+            Text("RECORDED MOVEMENT TRAIL (top-down X/Z)")
                 .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             Canvas { context, size in
                 let trail = ar.trail
@@ -100,7 +106,7 @@ struct DataInspectorTabView: View {
         Panel {
             VStack(alignment: .leading, spacing: 10) {
                 sectionTitle("Raw Sensor Data", systemImage: "tablecells")
-                if let s = snapshot {
+                if let s = snapshot, ar.isCurrentObservation(timestamp: s.timestamp) {
                     HStack {
                         Stat(label: "Frame time", value: String(format: "%.3f s", s.timestamp))
                         Stat(label: "Tracking", value: s.trackingQuality)
@@ -111,13 +117,18 @@ struct DataInspectorTabView: View {
                     }
                     matrixView("Camera intrinsics (pixels)", rows: Exporters.rows(s.intrinsics))
                     explanation("The intrinsics matrix holds focal lengths (fx, fy) and the optical centre (cx, cy). They convert between pixels and real-world angles — essential for turning a depth pixel into a 3D point.")
-                    matrixView("Camera transform (world)", rows: Exporters.rows(s.transform))
-                    explanation("The transform is the camera's position + orientation in ARKit world space. The last column is the camera's X/Y/Z location in metres.")
+                    if s.hasWorldCoordinates && worldPoseIsLive {
+                        matrixView("Camera transform (world)", rows: Exporters.rows(s.transform))
+                        explanation("The transform is the camera's position + orientation in ARKit world space. The last column is the camera's X/Y/Z location in metres.")
+                    } else {
+                        explanation("Camera and depth readings are live. World coordinates wait for normal tracking and saved-place recognition.")
+                    }
                     depthGridView(s.sampleDepthGrid)
                     explanation("A coarse 8×8 grid of actual depth readings (metres) sampled across the frame. Blank cells had no valid measurement — we never invent a value.")
-                    samplePointsView(s.samplePoints)
+                    if s.hasWorldCoordinates && worldPoseIsLive { samplePointsView(s.samplePoints) }
                 } else {
-                    Text("Waiting for a frame…").foregroundStyle(.secondary).font(.footnote)
+                    Text(ar.runState == .running ? "Waiting for a fresh frame…" : "Camera \(ar.runState.rawValue.lowercased())")
+                        .foregroundStyle(.secondary).font(.footnote)
                 }
             }
         }
@@ -214,10 +225,16 @@ struct DataInspectorTabView: View {
     // MARK: - Helpers
 
     private func snapshotLoop() async {
+        snapshot = nil
         while !Task.isCancelled {
-            if ar.runState == .running { snapshot = ar.liveSnapshot() }
-            try? await Task.sleep(for: .milliseconds(700))
+            snapshot = ar.liveSnapshot()
+            try? await Task.sleep(for: .milliseconds(250))
         }
+    }
+
+    private var worldPoseIsLive: Bool {
+        guard let frame = ar.session.currentFrame else { return false }
+        return ar.isCurrentWorldFrame(frame)
     }
 
     private func sectionTitle(_ title: String, systemImage: String) -> some View {

@@ -186,6 +186,8 @@ nonisolated struct ObjectObservation: Identifiable, Sendable {
     /// World-space points at the top and bottom of the detection's vertical extent.
     var topPositionWorld: SIMD3<Float>? = nil
     var bottomPositionWorld: SIMD3<Float>? = nil
+    /// All four detection corners are needed when the phone or floor is tilted.
+    var boundsCornersWorld: [SIMD3<Float>] = []
 }
 
 nonisolated enum ProximityState: String, Sendable, CaseIterable {

@@ -211,7 +211,7 @@ final class VisionInferenceEngine {
             clearResults()
         }
         if let frame = latestFrame,
-           !ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) {
+           provider?.isCurrentObservation(timestamp: frame.timestamp) != true {
             clearResults()
         }
         guard sdkAvailable else { loadState = .sdkUnavailable; report(.notReady(.sdkUnavailable)); return }
@@ -219,7 +219,7 @@ final class VisionInferenceEngine {
         guard let provider, provider.isRunning else {
             clearResults(); report(.notReady(.sessionNotRunning)); return
         }
-        guard let frame = provider.snapshot() else {
+        guard let frame = provider.cameraSnapshot() else {
             clearResults(); report(.notReady(.noFrame)); return
         }
         let generation = provider.sessionGeneration
@@ -246,8 +246,8 @@ final class VisionInferenceEngine {
             skippedSlots: BenchmarkMath.skippedInferenceSlots(cycleSeconds: cycle, targetInterval: interval))))
         // A model switched away mid-flight: the measurement is real, the overlay is stale.
         guard !Task.isCancelled, isEnabled, variant == selectedVariant,
-              provider.isRunning, provider.sessionGeneration == generation,
-              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
+              provider.sessionGeneration == generation,
+              provider.isCurrentObservation(timestamp: frame.timestamp) else { return }
         latestFrame = frame
         resultSessionGeneration = generation
         publish(detection)

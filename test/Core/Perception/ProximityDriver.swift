@@ -44,6 +44,8 @@ final class ProximityDriver {
     private(set) var primaryRegion: SpatialRegion?
     private(set) var primaryTTC: Float?
     private(set) var recentAlerts: [ProximityEvent] = []
+    private(set) var inputStatus: AlertInputStatus = .stopped
+    var statusText: String { inputStatus.message }
 
     private unowned let proximity: ProximityEvaluator
     private unowned let spatial: SpatialAlgorithmsEngine
@@ -78,14 +80,14 @@ final class ProximityDriver {
     func start() {
         guard loopTask == nil else { return }
         running = true
-        hazardMap?.start()
+        inputStatus = .waitingForCamera
         loopTask = Task { [weak self] in await self?.loop() }
     }
 
     func stop() {
         running = false
+        inputStatus = .stopped
         loopTask?.cancel(); loopTask = nil
-        hazardMap?.stop()
         feedback?.stop()
         resetFilters()
     }
@@ -108,6 +110,7 @@ final class ProximityDriver {
         let now = CACurrentMediaTime()
 
         if demoMode {
+            inputStatus = .demo
             let inPath = abs(mockRegion == .center ? 0 : 45) <= 30   // center = in path
             let event = proximity.evaluate(nearest: mockDistance, confidence: 1.0, region: mockRegion,
                                            label: "mock", isSimulated: true, inputTimestamp: now,
@@ -125,21 +128,29 @@ final class ProximityDriver {
             sessionGeneration = provider?.sessionGeneration ?? -1
             resetFilters()
         }
-        guard let provider, let frame = provider.snapshot(), frame.trackingIsNormal,
-              spatial.sessionGeneration == provider.sessionGeneration,
-              ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) else {
+        let frame = provider?.cameraSnapshot()
+        let geometryCurrent = provider.map {
+            spatial.sessionGeneration == $0.sessionGeneration &&
+            $0.isCurrentObservation(timestamp: spatial.frameTimestamp)
+        } ?? false
+        inputStatus = AlertInputStatus.evaluate(cameraAvailable: frame != nil,
+            depthAvailable: frame?.depthMap != nil || frame?.smoothedDepthMap != nil,
+            geometryCurrent: geometryCurrent, worldTrackingValid: frame?.trackingIsNormal == true)
+        guard inputStatus.hasCurrentMeasurements else {
             resetFilters()
             let event = proximity.evaluate(nearest: nil, confidence: nil, region: nil, label: nil,
                                            isSimulated: false, inputTimestamp: now)
-            updateFeedback(state: event.state, distance: nil, ttc: nil,
-                           inPath: true, bearing: 0, now: now)
+            // Drop stale cues immediately; the loop and the user's request stay
+            // active and will consume the next fresh camera/depth observation.
+            feedback?.stop()
             log(event)
             return
         }
 
         let hazard: Hazard?
         switch source {
-        case .fusedObjects: hazard = fusedHazard() ?? occupancyHazard()
+        case .fusedObjects:
+            hazard = frame?.trackingIsNormal == true ? (fusedHazard() ?? occupancyHazard()) : occupancyHazard()
         case .occupancy:    hazard = occupancyHazard()
         }
 

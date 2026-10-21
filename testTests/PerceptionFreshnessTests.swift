@@ -72,6 +72,33 @@ struct PerceptionFreshnessTests {
         #expect(try fuse(confidence: 2, tracking: false).positionWorld == nil)
     }
 
+    @Test func landscapeDetectionHeightUsesAllCornersAndRequiresTrustedWorld() throws {
+        let observation = try fuse(confidence: 2)
+        // In this landscape pose, the former portrait centerline endpoints have
+        // the same world Y; the full rectangle still spans two metres vertically.
+        #expect(observation.topPositionWorld?.y == observation.bottomPositionWorld?.y)
+        #expect(observation.boundsCornersWorld.count == 4)
+        #expect(observation.boundsCornersWorld.map(\.y).min() == -1)
+        #expect(observation.boundsCornersWorld.map(\.y).max() == 1)
+        #expect(try fuse(confidence: 2, tracking: false).boundsCornersWorld.isEmpty)
+        #expect(try fuse(confidence: 0).boundsCornersWorld.isEmpty)
+    }
+
+    @Test func restoredObstaclesRemainContextWithoutLiveAlerts() {
+        let fusion = SpatialFusionEngine(), spatial = SpatialAlgorithmsEngine()
+        let hazards = WorldHazardMap(fusion: fusion, spatial: spatial)
+        let saved = SavedPerceptionHazard(position: MapPosition(x: 0, y: 1, z: -0.2),
+            radius: 0.3, label: "chair", confidence: 0.9,
+            minHeight: 0, maxHeight: 1.5, height: .unknown)
+        hazards.restorePersistentSnapshot([saved])
+        #expect(hazards.hazards.isEmpty && hazards.zones.isEmpty)
+        #expect(hazards.primaryHazard() == nil)
+        #expect(hazards.persistentSnapshot() == [saved])
+        hazards.clearResults()
+        #expect(hazards.savedContext == [saved])
+        #expect(hazards.persistentSnapshot() == [saved])
+    }
+
     @Test func malformedDetectorBoxesAreRejectedBeforePixelIndexing() throws {
         #expect(try observations(confidence: 2,
                                  box: CGRect(x: CGFloat.nan, y: 0, width: 1, height: 1)).isEmpty)

@@ -68,8 +68,8 @@ struct CameraTabView: View {
         Panel {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Stat(label: "Session", value: ar.runState.rawValue,
-                         tint: ar.runState == .running ? Theme.good : .white)
+                    Stat(label: "Session", value: ar.isRecoveringSensors ? "Recovering" : ar.runState.rawValue,
+                         tint: ar.isRecoveringSensors ? Theme.warn : (ar.runState == .running ? Theme.good : .white))
                     Stat(label: "FPS", value: ar.fps > 0 ? String(format: "%.1f", ar.fps) : "—")
                 }
                 HStack {

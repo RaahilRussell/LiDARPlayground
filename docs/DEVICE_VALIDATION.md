@@ -6,27 +6,64 @@ results are recorded below. Physical checks still require a LiDAR iPhone/iPad
 and, for profiling/installing, a Mac with Xcode 26.5. This is a prototype:
 simulator results do not establish navigation safety.
 
+## Camera, LiDAR, and vision regression repair
+
+The subsequent repair restores direct access to the original tools and fixes
+shared sensor/processing shutdowns. Its changes and additional UI/lifecycle
+coverage are described in [REGRESSION_REPAIR.md](REGRESSION_REPAIR.md); current
+build and UI-test results are recorded in the pull request. The 123-test result
+below is historical evidence for the earlier feature implementation, not for
+this later repair.
+
+- [ ] Interrupt camera delivery while mapping and Assist are active. Verify the
+      recovery banner appears, retries are bounded, the current place remains
+      selected, and fresh data/alerts resume without restarting Assist. After
+      automatic retry exhaustion, Retry Sensing must retry the same world.
+- [ ] Save Last Checkpoint during camera loss and while explicitly paused.
+      Reopen it offline and compare surfaces, colors, photos, paths, and text
+      with the displayed checkpoint time. Saving must not restart a paused
+      camera or claim later observations. A new map must not reuse the old
+      checkpoint. Verify a failed disk write keeps the checkpoint retryable.
+- [ ] Let haptics idle long enough for automatic engine shutdown, then approach
+      an observed obstacle. Repeat after a phone call; verify haptics and spoken
+      alerts recover, and sensor-unavailable/recovered announcements do not spam.
+- [ ] Rotate between portrait and both landscape orientations in Live AI and
+      Fused. Boxes and masks must share the displayed camera crop. Confirm the
+      LiDAR distance still corresponds to the same detected object.
+- [ ] Rapidly change Depth range/confidence/source and Point Cloud density/space
+      while mapping and Assist are active. Verify preview work stays single-flight,
+      stale options never replace the current display, and camera frames continue.
+
 ## Automatic mapping, color, navigation, and OCR follow-up
 
 This follow-up adds continuous foreground checkpoints, color/keyframe capture,
-visited-path navigation, and local OCR/signage. The earlier build/test results
-below remain evidence for their named commits only. **Apple compilation and
-simulator results for this follow-up are pending** at the time this checklist
-was added. The new source has been reviewed and parsed locally; that does not
-establish successful Apple SDK compilation or physical sensor behavior. See
+visited-path navigation, and local OCR/signage in [PR #3](https://github.com/RaahilRussell/LiDARPlayground/pull/3).
+Code head `9b0c1a235e523d324e705ca558880e7b8822c46d` passed its unsigned iPhone
+build and **123 tests in 14 suites in 6.388 seconds** in
+[GitHub macOS run 39555636456](https://github.com/RaahilRussell/LiDARPlayground/actions/runs/39555636456)
+on 2026-10-21. The log confirms `BUILD SUCCEEDED` and `TEST SUCCEEDED`, including
+the synthetic-image Vision OCR integration test. The earlier results below
+remain evidence for their named commits only. These build and simulator results
+do not establish physical sensor behavior. See
 [AUTOMATIC_MAPPING_ARCHITECTURE.md](AUTOMATIC_MAPPING_ARCHITECTURE.md) for the
 implemented lifecycle, segment, route, and image-evidence boundaries.
 
-- [ ] Record the follow-up code commit and GitHub macOS run here after the
-      unsigned iPhone build and all simulator tests finish. Include the actual
-      number of tests/suites and any compiler warnings; do not reuse the earlier
-      77-test count as evidence for these new features.
+The successful log retains actor-isolation warnings in older `DepthRefinement`
+and `PointCloudGenerator` helpers, `UIWindowScene.interfaceOrientation`
+deprecation warnings, and a redundant nonoptional `#require` warning in the
+color tests. It does not establish Swift 6 strict-concurrency compatibility or
+a warning-free build.
+
+- [x] The exact follow-up code head above passes the unsigned iPhone build and
+      all 123 simulator tests in 14 suites; the run and remaining compiler
+      warnings are recorded above.
 - [ ] On iPhone 15 Pro Max/iOS 26.5+, launch with an empty library. Without any
       Start or Save tap, verify the camera maps, the first usable map saves,
       and later updates checkpoint about every 20 seconds when tracking permits.
       Confirm the screen remains awake while mapping and normal automatic sleep
       returns on pause/background.
-- [ ] Open Saved Places, an offline place, Text & Signs, Assist, and Developer.
+- [ ] Open Camera, every LiDAR and AI Vision tool, Saved Places, an offline
+      place, Text & Signs, and Assist.
       Verify automatic capture remains active, no second ARSession/capture
       session starts, and library refresh does not interrupt saving.
 - [ ] Pause explicitly, background/foreground and lock/unlock; the camera must
@@ -49,7 +86,9 @@ implemented lifecycle, segment, route, and image-evidence boundaries.
       Separately fill the navigation graph; only new path recording should stop.
       Pause/background during commit; completion must not unexpectedly restart
       the camera. Force disk failure and verify the final immutable capture and
-      last durable revision remain available for retry.
+      last durable revision remain available for retry, while camera, depth,
+      live mesh and CV remain usable. Retry Saving must preserve surfaces seen
+      after the failure; photo/text intake resumes after the segment commits.
 - [ ] Scan colored walls and small objects from multiple angles. Compare saved
       colors with the real surfaces; an object in front of a wall must not paint
       its color onto the wall. Confirm unobserved/low-confidence vertices remain
@@ -86,7 +125,11 @@ implemented lifecycle, segment, route, and image-evidence boundaries.
       use, frame cadence, and recovery after a phone call. No physical-device
       performance or navigation-safety acceptance is claimed until these pass.
 
-## New mapping changes: validation status
+## Prior saved-place implementation: validation status
+
+This section preserves evidence for the earlier saved-place implementation.
+Its 77-test result and references to its final code head are historical; they
+do not describe the automatic mapping/color/navigation/OCR follow-up above.
 
 The mapping change was authored on Windows, where Swift syntax parsing and
 repository consistency checks were run. Apple SDK compilation and Swift Testing
@@ -107,7 +150,7 @@ saved map, corrupt/incomplete storage, map extension merging, stale timestamps,
 confidence-gated camera-to-world fusion, missing-confidence diagnostic filters,
 future archive versions, and symbolic-link storage rejection.
 
-### GitHub macOS CI results (2026-10-21)
+### Prior implementation GitHub macOS CI results (2026-10-21)
 
 - Initial mapping head `291d0fea`: unsigned iPhone build succeeded; **69 tests in
   8 suites passed**, with `TEST SUCCEEDED` in
@@ -178,7 +221,7 @@ future archive versions, and symbolic-link storage rejection.
       forward path must remain uncertain rather than inheriting the side's clear
       state. Offline saved geometry must never drive live obstacle guidance.
 
-## Build and unit tests (Mac)
+## Prior saved-place implementation build and unit tests (Mac)
 
 - [x] `xcodebuild … -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build` succeeds for final code head `77644c22d337d9df36ab4da14a268d2e8cbe4165` in GitHub macOS CI (command in `CLAUDE.md`).
 - [x] The verified unsigned build completed without compiler errors. Existing isolation/deprecation warnings remain as described above.

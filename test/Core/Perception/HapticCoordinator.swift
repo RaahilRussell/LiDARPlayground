@@ -52,38 +52,64 @@ final class HapticCoordinator {
     private var currentPlayer: CHHapticPatternPlayer?
     private var lastPlayTime: TimeInterval = 0
     private var lastPriority: Int = -1
+    private var recovery = FeedbackEngineRecovery()
+    private var engineGeneration = 0
 
     init() { prepareEngine() }
 
     // MARK: - Engine lifecycle
 
-    func prepareEngine() {
-        guard supportsHaptics else { engineState = "unsupported on this device"; return }
+    func prepareEngine() { _ = ensureRunning(force: true) }
+
+    @discardableResult
+    private func ensureRunning(force: Bool = false) -> Bool {
+        guard supportsHaptics else { engineState = "unsupported on this device"; return false }
+        if force { recovery.stopped() }
+        if recovery.isReady { return true }
+        let now = CACurrentMediaTime()
+        guard recovery.shouldAttemptStart(at: now) else { return false }
         do {
-            let engine = try CHHapticEngine()
-            engine.isAutoShutdownEnabled = true
-            engine.stoppedHandler = { [weak self] reason in
-                Task { @MainActor in self?.engineState = "stopped (\(reason.rawValue))" }
+            if engine == nil {
+                let created = try CHHapticEngine()
+                created.isAutoShutdownEnabled = true
+                engineGeneration += 1
+                let generation = engineGeneration
+                created.stoppedHandler = { [weak self] reason in
+                    Task { @MainActor in
+                        guard let self, self.engineGeneration == generation else { return }
+                        self.recovery.stopped()
+                        self.currentPlayer = nil
+                        self.engineState = "Stopped (\(reason.rawValue)) · next alert restarts haptics"
+                    }
+                }
+                created.resetHandler = { [weak self] in
+                    Task { @MainActor in
+                        guard let self, self.engineGeneration == generation else { return }
+                        self.recovery.stopped()
+                        self.currentPlayer = nil
+                        self.engineState = "Reset · next alert restarts haptics"
+                    }
+                }
+                engine = created
             }
-            engine.resetHandler = { [weak self] in
-                // The engine reset (e.g., after interruption) — restart it.
-                Task { @MainActor in self?.restart() }
-            }
+            guard let engine else { return false }
             try engine.start()
-            self.engine = engine
+            recovery.started()
             engineState = "running"
+            return true
         } catch {
-            engineState = "failed: \(error.localizedDescription)"
+            recovery.failed(at: now)
+            engineState = "Retrying haptics: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func restart() {
-        do { try engine?.start(); engineState = "running" }
-        catch { engineState = "restart failed: \(error.localizedDescription)" }
-    }
+    func restart() { _ = ensureRunning(force: true) }
 
     func stopEngine() {
         engine?.stop()
+        recovery.stopped()
+        currentPlayer = nil
         engineState = "stopped"
     }
 
@@ -100,7 +126,7 @@ final class HapticCoordinator {
             // Suppress unless this event outranks the one that set the cooldown.
             if withinCooldown && pattern.priority <= lastPriority { return nil }
         }
-        guard let engine else { prepareEngine(); return nil }
+        guard ensureRunning(), let engine else { return nil }
         do {
             let patternObj = try CHHapticPattern(events: events(for: pattern), parameters: [])
             let player = try engine.makePlayer(with: patternObj)
@@ -111,6 +137,7 @@ final class HapticCoordinator {
             lastPriority = pattern.priority
             return now
         } catch {
+            recovery.failed(at: now)
             engineState = "play failed: \(error.localizedDescription)"
             return nil
         }
@@ -119,7 +146,7 @@ final class HapticCoordinator {
     /// Immediate single transient with NO cooldown/priority — the graded proximity
     /// pulse train controls its own cadence, so it bypasses the discrete-event gate.
     func pulse(intensity: Float, sharpness: Float) {
-        guard enabled, supportsHaptics, let engine else { return }
+        guard enabled, supportsHaptics, ensureRunning(), let engine else { return }
         do {
             let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
                 CHHapticEventParameter(parameterID: .hapticIntensity, value: max(0, min(1, intensity))),
@@ -129,6 +156,7 @@ final class HapticCoordinator {
             let player = try engine.makePlayer(with: pattern)
             try player.start(atTime: 0)
         } catch {
+            recovery.failed(at: CACurrentMediaTime())
             engineState = "pulse failed: \(error.localizedDescription)"
         }
     }

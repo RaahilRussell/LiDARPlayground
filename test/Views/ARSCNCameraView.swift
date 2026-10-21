@@ -18,6 +18,7 @@ struct ARSCNCameraView: UIViewRepresentable {
         let view = ARSCNView(frame: .zero)
         // Reuse the one shared session rather than the session ARSCNView makes itself.
         view.session = manager.session
+        manager.session.delegate = manager
         view.automaticallyUpdatesLighting = true
         view.rendersContinuously = true
         view.backgroundColor = .black
@@ -29,6 +30,7 @@ struct ARSCNCameraView: UIViewRepresentable {
         // Keep the view bound to the shared session (defensive; usually a no-op).
         if uiView.session !== manager.session {
             uiView.session = manager.session
+            manager.session.delegate = manager
         }
     }
 

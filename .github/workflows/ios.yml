@@ -57,6 +57,13 @@ jobs:
             -destination-timeout 120 -derivedDataPath build/Simulator \
             -resultBundlePath TestResults.xcresult -parallel-testing-enabled NO \
             -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO test | tee simulator-tests.log
+      - name: Export UI screenshots
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -d TestResults.xcresult ]; then
+            xcrun xcresulttool export attachments --path TestResults.xcresult --output-path ui-test-attachments
+          fi
       - name: Preserve diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -66,4 +73,5 @@ jobs:
             TestResults.xcresult
             device-build.log
             simulator-tests.log
+            ui-test-attachments
           if-no-files-found: ignore

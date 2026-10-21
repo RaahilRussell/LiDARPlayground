@@ -10,7 +10,7 @@
 
 import Foundation
 
-enum ObstacleHeight: String, Codable, Sendable {
+nonisolated enum ObstacleHeight: String, Codable, Sendable {
     case unknown, ground, knee, torso, overhead
 
     /// Thresholds in metres above the floor.

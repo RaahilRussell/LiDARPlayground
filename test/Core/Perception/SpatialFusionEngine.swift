@@ -38,6 +38,8 @@ final class SpatialFusionEngine {
         self.vision = vision
     }
 
+    var isRunning: Bool { loopTask != nil }
+
     func start() {
         guard loopTask == nil else { return }
         loopTask = Task { [weak self] in await self?.loop() }
@@ -67,8 +69,9 @@ final class SpatialFusionEngine {
               let result = vision.latestResult,
               result.frameTimestamp != lastDetectionTimestamp,
               let frame = vision.latestFrame,
+              frame.trackingIsNormal,
               frame.timestamp == result.frameTimestamp,
-              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()),
+              provider.isCurrentObservation(timestamp: frame.timestamp),
               let depthMap = frame.smoothedDepthMap ?? frame.depthMap else { return }
         lastDetectionTimestamp = result.frameTimestamp
 
@@ -165,6 +168,15 @@ final class SpatialFusionEngine {
             let bottomWorld: SIMD3<Float>? = frame.trackingIsNormal && !uncertain
                 ? { let w = frame.cameraTransform * SIMD4<Float>(bottomCamera, 1); return SIMD3(w.x, w.y, w.z) }()
                 : nil
+            let cornersWorld: [SIMD3<Float>] = world == nil ? [] : [bxMin, bxMax].flatMap { x in
+                [byMin, byMax].map { y in
+                    let point = unprojectCamera(nx: x, ny: y, depth: median,
+                                                intrinsics: frame.intrinsics, dw: dw, dh: dh,
+                                                imageRes: frame.imageResolution)
+                    let transformed = frame.cameraTransform * SIMD4<Float>(point, 1)
+                    return SIMD3(transformed.x, transformed.y, transformed.z)
+                }
+            }
             let azimuth = atan2(cam.x, -cam.z) * 180 / .pi
 
             // Region from horizontal box centre in the portrait display.
@@ -179,7 +191,8 @@ final class SpatialFusionEngine {
                 azimuthDegrees: azimuth, region: region,
                 boxNormalized: box, timestamp: frame.timestamp,
                 ageSeconds: max(0, now - frame.timestamp), uncertain: uncertain,
-                topPositionWorld: topWorld, bottomPositionWorld: bottomWorld))
+                topPositionWorld: topWorld, bottomPositionWorld: bottomWorld,
+                boundsCornersWorld: cornersWorld))
         }
         return results
     }

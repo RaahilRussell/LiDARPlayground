@@ -19,6 +19,7 @@ struct SpatialFusionView: View {
     enum Mode: String, CaseIterable, Identifiable { case camera = "Camera", debug3D = "3D Debug"; var id: String { rawValue } }
     @State private var mode: Mode = .camera
     @State private var debugHolder = SpatialDebugHolder()
+    @State private var pipelineConsumer = UUID()
 
     var body: some View {
         ZStack {
@@ -50,10 +51,9 @@ struct SpatialFusionView: View {
             }
         }
         .onAppear {
-            if ar.runState == .idle { ar.start() }
-            vision.start(); fusion.start(); spatial.start()
+            perception.acquire(.fused, for: pipelineConsumer)
         }
-        .onDisappear { spatial.stop(); fusion.stop(); vision.stop() }
+        .onDisappear { perception.release(pipelineConsumer) }
         .task(id: mode) { await pumpDebug() }
     }
 

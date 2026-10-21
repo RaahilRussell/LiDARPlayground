@@ -52,6 +52,8 @@ final class WorldHazardMap {
     private(set) var hazards: [Hazard] = []
     private(set) var zones: [ZoneHazard] = []        // nearest per L/C/R (persistent)
     private(set) var corridorNearest: ZoneHazard?    // nearest in the body-width path
+    /// Archived context is retained for display/export, never live proximity.
+    private(set) var savedContext: [SavedPerceptionHazard] = []
 
     // Tunables.
     var maxAge: TimeInterval = 5
@@ -77,6 +79,7 @@ final class WorldHazardMap {
     }
 
     func attach(provider: ARSensorProvider) { self.provider = provider }
+    var isRunning: Bool { loopTask != nil }
 
     func start() {
         guard loopTask == nil else { return }
@@ -95,7 +98,8 @@ final class WorldHazardMap {
     /// Exports only stable, high-confidence world results for map persistence.
     /// Motion-derived fields are intentionally omitted and rebuilt on revisit.
     func persistentSnapshot() -> [SavedPerceptionHazard] {
-        hazards.filter { $0.confidence >= 0.45 }.compactMap { hazard in
+        if let provider, sessionGeneration != provider.sessionGeneration { return [] }
+        let live = hazards.filter { $0.confidence >= 0.45 }.compactMap { hazard -> SavedPerceptionHazard? in
             let position = MapPosition(x: hazard.world.x, y: hazard.world.y, z: hazard.world.z)
             guard position.isValid else { return nil }
             return SavedPerceptionHazard(
@@ -107,25 +111,26 @@ final class WorldHazardMap {
                 maxHeight: hazard.maxHeight,
                 height: ObstacleHeight.classify(minHeight: hazard.minHeight, maxHeight: hazard.maxHeight))
         }
+        let historical = savedContext.filter { saved in
+            !live.contains { current in
+                simd_distance(SIMD3(saved.position.x, saved.position.y, saved.position.z),
+                              SIMD3(current.position.x, current.position.y, current.position.z)) < mergeRadius
+            }
+        }
+        return Array((live + historical).prefix(200))
     }
 
-    /// Restores world-space memory after ARKit has accepted the saved world map.
-    /// Timestamps are reset because old monotonic timestamps cannot be compared
-    /// with this process's current clock.
+    /// Saved observations have no current sensor evidence. They stay separate
+    /// from live hazards until the camera/LiDAR observes this location again.
     func restorePersistentSnapshot(_ snapshot: [SavedPerceptionHazard]) {
-        let now = CACurrentMediaTime()
-        hazards = snapshot.prefix(maxHazards).enumerated().compactMap { index, saved in
+        clearResults()
+        savedContext = Array(snapshot.prefix(200).filter { saved in
             guard saved.position.isValid, saved.radius.isFinite, saved.radius >= 0,
-                  saved.confidence.isFinite, (0...1).contains(saved.confidence) else { return nil }
-            return Hazard(id: index, world: SIMD3(saved.position.x, saved.position.y, saved.position.z),
-                          radius: saved.radius, label: saved.label, confidence: saved.confidence,
-                          lastSeen: now, minHeight: saved.minHeight, maxHeight: saved.maxHeight)
-        }
-        nextId = hazards.count
+                  saved.radius <= 100, saved.confidence.isFinite, (0...1).contains(saved.confidence),
+                  [saved.minHeight, saved.maxHeight].compactMap({ $0 }).allSatisfy({ $0.isFinite && abs($0) <= 100 }) else { return false }
+            return true
+        })
         sessionGeneration = provider?.sessionGeneration ?? sessionGeneration
-        zones = []
-        corridorNearest = nil
-        lastRecomputeTime = 0
     }
 
     private func loop() async {
@@ -142,11 +147,11 @@ final class WorldHazardMap {
         guard let provider else { clearResults(); return }
         if sessionGeneration != provider.sessionGeneration {
             clearResults()
+            savedContext = []
             sessionGeneration = provider.sessionGeneration
         }
         guard let frame = provider.snapshot(), frame.trackingIsNormal else {
-            decay(now)
-            zones = []; corridorNearest = nil; lastRecomputeTime = 0
+            clearResults()
             return
         }
         let transform = frame.cameraTransform
@@ -156,9 +161,9 @@ final class WorldHazardMap {
             for obs in fusion.observations where !obs.uncertain && obs.nearestMeters.isFinite
                 && fusion.sessionGeneration == sessionGeneration
                 && obs.timestamp > lastFusionTimestamp
-                && ARSensorProvider.isFresh(timestamp: obs.timestamp, now: now) {
+                && provider.isCurrentObservation(timestamp: obs.timestamp) {
                 if let world = obs.positionWorld {
-                    let heights = heightBounds(points: [obs.topPositionWorld, obs.bottomPositionWorld].compactMap { $0 })
+                    let heights = heightBounds(points: obs.boundsCornersWorld)
                     upsert(world: world, radius: 0.25, label: obs.label,
                            confidence: obs.confidence, now: obs.timestamp,
                            minHeight: heights?.min, maxHeight: heights?.max)
@@ -170,7 +175,7 @@ final class WorldHazardMap {
             // Ingest elevated LiDAR clusters (unlabeled geometry — covers walls, poles…).
             if spatial.hasWorldCoordinates, spatial.sessionGeneration == sessionGeneration,
                spatial.frameTimestamp > lastSpatialTimestamp,
-               ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) {
+               provider.isCurrentObservation(timestamp: spatial.frameTimestamp) {
                 for cluster in spatial.clusters {
                     let extent = cluster.maxBound - cluster.minBound
                     let radius = max(0.15, simd_length(extent) * 0.5)
@@ -263,7 +268,9 @@ final class WorldHazardMap {
     }
 
     private func heightBounds(points: [SIMD3<Float>]) -> (min: Float, max: Float)? {
-        guard let floor = spatial.floor, !points.isEmpty else { return nil }
+        guard spatial.hasWorldCoordinates, spatial.sessionGeneration == sessionGeneration,
+              provider?.isCurrentObservation(timestamp: spatial.frameTimestamp) == true,
+              let floor = spatial.floor, !points.isEmpty else { return nil }
         let distances = points.map(floor.signedDistance)
         guard distances.allSatisfy({ $0.isFinite }), let min = distances.min(), let max = distances.max() else {
             return nil

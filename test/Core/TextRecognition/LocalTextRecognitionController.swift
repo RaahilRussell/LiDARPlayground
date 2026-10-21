@@ -96,9 +96,15 @@ final class LocalTextRecognitionController {
                 try TextRecognitionWorker.recognize(frame: frame, orientation: orientation)
             }.value
             guard !Task.isCancelled, isRunning, token == operation,
-                  capturedGeneration == manager.sessionGeneration, manager.runState == .running,
-                  !manager.isRelocalizing, manager.trackingIsNormal,
-                  ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime(), maxAge: 3) else { return }
+                  capturedGeneration == manager.sessionGeneration,
+                  let currentFrame = manager.session.currentFrame, manager.isCurrentWorldFrame(currentFrame),
+                  manager.isCurrentObservation(timestamp: frame.timestamp, maxAge: 3) else {
+                if token == operation {
+                    latestAnnotations = []; latestDirectionalSignage = []; latestImageJPEG = nil
+                    status = "Waiting for current camera tracking; older text observations were discarded."
+                }
+                return
+            }
             latestImageJPEG = result.imageJPEG
             lastRecognitionDate = Date()
             var latest: [SavedTextAnnotation] = []
@@ -143,6 +149,7 @@ final class LocalTextRecognitionController {
             }
         } catch {
             guard token == operation else { return }
+            latestAnnotations = []; latestDirectionalSignage = []; latestImageJPEG = nil
             status = "Text recognition will retry: \(error.localizedDescription)"
         }
     }
