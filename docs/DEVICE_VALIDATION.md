@@ -15,6 +15,22 @@ build and UI-test results are recorded in the pull request. The 123-test result
 below is historical evidence for the earlier feature implementation, not for
 this later repair.
 
+- [ ] Interrupt camera delivery while mapping and Assist are active. Verify the
+      recovery banner appears, retries are bounded, the current place remains
+      selected, and fresh data/alerts resume without restarting Assist. After
+      automatic retry exhaustion, Retry Sensing must retry the same world.
+- [ ] Save Last Checkpoint during camera loss and while explicitly paused.
+      Reopen it offline and compare surfaces, colors, photos, paths, and text
+      with the displayed checkpoint time. Saving must not restart a paused
+      camera or claim later observations. A new map must not reuse the old
+      checkpoint. Verify a failed disk write keeps the checkpoint retryable.
+- [ ] Let haptics idle long enough for automatic engine shutdown, then approach
+      an observed obstacle. Repeat after a phone call; verify haptics and spoken
+      alerts recover, and sensor-unavailable/recovered announcements do not spam.
+- [ ] Rotate between portrait and both landscape orientations in Live AI and
+      Fused. Boxes and masks must share the displayed camera crop. Confirm the
+      LiDAR distance still corresponds to the same detected object.
+
 ## Automatic mapping, color, navigation, and OCR follow-up
 
 This follow-up adds continuous foreground checkpoints, color/keyframe capture,

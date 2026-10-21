@@ -69,8 +69,9 @@ final class SpatialFusionEngine {
               let result = vision.latestResult,
               result.frameTimestamp != lastDetectionTimestamp,
               let frame = vision.latestFrame,
+              frame.trackingIsNormal,
               frame.timestamp == result.frameTimestamp,
-              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()),
+              provider.isCurrentObservation(timestamp: frame.timestamp),
               let depthMap = frame.smoothedDepthMap ?? frame.depthMap else { return }
         lastDetectionTimestamp = result.frameTimestamp
 

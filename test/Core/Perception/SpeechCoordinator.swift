@@ -25,18 +25,24 @@ final class SpeechCoordinator {
     private var audioConfigured = false
 
     func configureAudioIfNeeded() {
-        guard !audioConfigured else { return }
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio,
-                                 options: [.duckOthers, .mixWithOthers])
-        try? session.setActive(true)
-        audioConfigured = true
+        do {
+            if !audioConfigured {
+                try session.setCategory(.playback, mode: .spokenAudio,
+                                        options: [.duckOthers, .mixWithOthers])
+            }
+            // Interruptions can deactivate the audio session without changing
+            // our configuration flag. Re-activate before the next utterance.
+            try session.setActive(true)
+            audioConfigured = true
+        } catch { audioConfigured = false }
     }
 
     /// Speaks `text`, skipping exact repeats within `minRepeat` seconds. High
     /// priority interrupts current speech; normal priority yields if already talking.
     func speak(_ text: String, priority: SpeechPriority = .normal, minRepeat: Double = 3) {
         guard enabled, !text.isEmpty else { return }
+        configureAudioIfNeeded()
         let now = CACurrentMediaTime()
         if text == lastText, now - lastTime < minRepeat { return }
 

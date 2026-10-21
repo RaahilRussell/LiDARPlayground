@@ -77,6 +77,7 @@ struct StatusStripView: View {
 extension ARSessionManager {
     /// Compact tracking label for the tight status strip.
     var trackingShort: String {
+        if isRecoveringSensors { return "Recover" }
         switch runState {
         case .idle: return "Idle"
         case .paused: return "Paused"

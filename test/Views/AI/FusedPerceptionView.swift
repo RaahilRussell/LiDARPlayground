@@ -69,32 +69,23 @@ struct FusedPerceptionView: View {
     // MARK: - Fused camera overlay
 
     private var fusedCamera: some View {
-        GeometryReader { geo in
-            ZStack {
-                ARSCNCameraView(manager: ar).ignoresSafeArea()
-
-                if showMask, let mask = vision.latestResult?.combinedMask {
-                    Image(decorative: mask, scale: 1, orientation: .up)
-                        .resizable().scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .opacity(maskOpacity)
-                        .allowsHitTesting(false)
-                        .clipped()
-                }
-
-                // Fused object boxes (CV label + LiDAR distance).
+        PerceptionCameraOverlay(manager: ar,
+                                mask: showMask ? vision.latestResult?.combinedMask : nil,
+                                maskOpacity: maskOpacity,
+                                frameTimestamp: vision.latestResult?.frameTimestamp ?? 0) { transform, size in
+            if let transform {
                 ForEach(fusion.observations) { obs in
-                    fusedBox(obs, in: geo.size)
+                    if let rect = CameraOverlayGeometry.box(obs.boxNormalized, transform: transform) {
+                        fusedBox(obs, rect: rect)
+                    }
                 }
-
-                centerProbe(in: geo.size)
             }
+            centerProbe(in: size)
         }
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func fusedBox(_ obs: ObjectObservation, in size: CGSize) -> some View {
-        let rect = mapFill(obs.boxNormalized, imageAspect: 3.0 / 4.0, in: size)
+    private func fusedBox(_ obs: ObjectObservation, rect: CGRect) -> some View {
         let color = distanceColor(obs.nearestMeters, uncertain: obs.uncertain)
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 5)
@@ -174,7 +165,9 @@ struct FusedPerceptionView: View {
                     .frame(minWidth: 96)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(primaryText).font(.subheadline.weight(.semibold))
-                    Text("Source: \(driver.source.rawValue) · haptics on state change")
+                    Text(driver.inputStatus.hasCurrentMeasurements
+                         ? "Source: \(driver.source.rawValue) · haptics on state change"
+                         : "Your alert settings are kept while sensing recovers.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -183,6 +176,7 @@ struct FusedPerceptionView: View {
     }
 
     private var primaryText: String {
+        guard driver.inputStatus.hasCurrentMeasurements else { return driver.statusText }
         guard let d = driver.primaryDistance, d.isFinite else { return "No qualifying hazard" }
         let dir = directionName(driver.primaryRegion)
         let label = driver.primaryLabel ?? "obstacle"
@@ -218,9 +212,9 @@ struct FusedPerceptionView: View {
         let name = region == .left ? "LEFT" : (region == .right ? "RIGHT" : "AHEAD")
         return VStack(spacing: 2) {
             Text(name).font(.system(size: 9, weight: .bold))
-            Text(zone.map { String(format: "%.1f m", $0.distance) } ?? "clear")
+            Text(zone.map { String(format: "%.1f m", $0.distance) } ?? "unknown")
                 .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                .foregroundStyle(zone.map { distanceColor($0.distance, uncertain: false) } ?? Theme.good)
+                .foregroundStyle(zone.map { distanceColor($0.distance, uncertain: false) } ?? .secondary)
             Text(zone?.label ?? "—")
                 .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
         }
@@ -347,12 +341,4 @@ struct FusedPerceptionView: View {
         }
     }
 
-    private func mapFill(_ n: CGRect, imageAspect: CGFloat, in size: CGSize) -> CGRect {
-        let viewAspect = size.width / size.height
-        var dispW = size.width, dispH = size.height
-        if viewAspect > imageAspect { dispH = dispW / imageAspect } else { dispW = dispH * imageAspect }
-        let ox = (size.width - dispW) / 2, oy = (size.height - dispH) / 2
-        return CGRect(x: ox + n.minX * dispW, y: oy + n.minY * dispH,
-                      width: n.width * dispW, height: n.height * dispH)
-    }
 }

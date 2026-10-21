@@ -63,7 +63,11 @@ struct MappingHomeView: View {
                     .disabled(mapName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saves colored surfaces, photos, visited paths, destination labels, text marks, and localization data on this device.")
+                if mapping.isSavingRetainedCheckpoint {
+                    Text("Saves the last healthy checkpoint, including its surfaces, photos, paths, labels, and text. Observations after that checkpoint are not included.")
+                } else {
+                    Text("Saves colored surfaces, photos, visited paths, destination labels, text marks, and localization data on this device.")
+                }
             }
             .confirmationDialog("Start a new map?", isPresented: $showNewMap, titleVisibility: .visible) {
                 Button("Start New Map", role: .destructive) {
@@ -179,10 +183,18 @@ struct MappingHomeView: View {
                     Stat(label: "Map quality", value: ar.worldMappingDescription)
                     Stat(label: "Surfaces", value: ar.meshFaceCount.formatted())
                 }
-                Label(ar.canSaveWorldMap ? "Automatic saving is ready" : "Scanning until tracking and map quality are ready",
-                      systemImage: ar.canSaveWorldMap ? "checkmark.circle.fill" : "viewfinder")
-                    .font(.caption)
-                    .foregroundStyle(ar.canSaveWorldMap ? Theme.good : Theme.warn)
+                if mapping.isSavingRetainedCheckpoint, let checkpoint = mapping.retainedCheckpointAt {
+                    Label("Last healthy checkpoint is available", systemImage: "clock.arrow.circlepath")
+                        .font(.caption).foregroundStyle(Theme.warn)
+                    Text("Checkpoint last updated \(checkpoint.formatted(date: .abbreviated, time: .standard)). Saving it excludes later observations.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("mapping.retainedCheckpoint")
+                } else {
+                    Label(ar.canSaveWorldMap ? "Automatic saving is ready" : "Scanning until tracking and map quality are ready",
+                          systemImage: ar.canSaveWorldMap ? "checkmark.circle.fill" : "viewfinder")
+                        .font(.caption)
+                        .foregroundStyle(ar.canSaveWorldMap ? Theme.good : Theme.warn)
+                }
                 if ar.meshVertexCount >= MapLimits.maxVertices * 4 / 5 || ar.meshFaceCount >= MapLimits.maxTriangles * 4 / 5 {
                     Text("The current segment is getting large. Automatic mapping will save it before continuing in a new segment.")
                         .font(.caption).foregroundStyle(Theme.warn)
@@ -224,12 +236,19 @@ struct MappingHomeView: View {
                     showSaveName = true
                 }
             } label: {
-                Label(mapping.activeMap == nil ? "Name & Save Now" : "Save Now", systemImage: "square.and.arrow.down")
+                Label(saveButtonTitle, systemImage: "square.and.arrow.down")
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 34)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!ar.canSaveWorldMap || mapping.isBusy || !ar.supportsMesh)
+            .disabled(!mapping.canSaveMap || mapping.isBusy)
+            .accessibilityIdentifier("mapping.save")
+
+            if !mapping.canSaveMap {
+                Text(saveUnavailableReason)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("mapping.saveUnavailable")
+            }
 
             HStack {
                 Button {
@@ -248,6 +267,22 @@ struct MappingHomeView: View {
             }
             .buttonStyle(.bordered)
         }
+    }
+
+    private var saveButtonTitle: String {
+        if mapping.isSavingRetainedCheckpoint {
+            return mapping.activeMap == nil ? "Name & Save Checkpoint" : "Save Last Checkpoint"
+        }
+        return mapping.activeMap == nil ? "Name & Save Now" : "Save Now"
+    }
+
+    private var saveUnavailableReason: String {
+        guard ar.supportsWorldTracking && ar.supportsMesh else {
+            return "A LiDAR-equipped device is needed to capture a new map. Existing saved places remain available."
+        }
+        return ar.isUserPaused
+            ? "No usable checkpoint yet. Resume sensing to build a map before saving."
+            : "No usable checkpoint yet. Saving becomes available after tracking maps enough surfaces."
     }
 
     private var library: some View {

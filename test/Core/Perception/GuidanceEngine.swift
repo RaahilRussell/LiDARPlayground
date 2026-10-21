@@ -50,6 +50,14 @@ final class GuidanceEngine {
     private var lastLabel: String?
     private var lastCriticalRepeat: TimeInterval = 0
     private var lastHazardAnnouncement: TimeInterval = 0
+    private var recoveryAnnouncements = AlertRecoveryAnnouncements()
+
+    /// Manual Haptics Lab samples can share the diagnostic evaluator, but they
+    /// must never be presented as observations from the live camera.
+    var liveProximityEvent: ProximityEvent? {
+        guard let event = proximity.lastEvent, !event.isSimulated else { return nil }
+        return event
+    }
 
     init(speech: SpeechCoordinator, haptics: HapticCoordinator,
          spatialCue: SpatialCueCoordinator, proximity: ProximityEvaluator,
@@ -82,6 +90,7 @@ final class GuidanceEngine {
         lastRegion = nil
         lastLabel = nil
         lastHazardAnnouncement = 0
+        recoveryAnnouncements = AlertRecoveryAnnouncements()
         if canSpeak { speech.speak("Guidance started.", priority: .high) }
         loopTask = Task { [weak self] in await self?.loop() }
     }
@@ -130,16 +139,33 @@ final class GuidanceEngine {
 
     private func announce() {
         guard canSpeak else { updateSuspensionStatus(); return }
-        guard let ar, let frame = ar.session.currentFrame, ar.isCurrentWorldFrame(frame) else {
-            statusText = "Waiting for current sensor tracking"; return
+        let cameraCurrent = ar.flatMap { manager in
+            manager.session.currentFrame.map { manager.isCurrentFrame($0) }
+        } ?? false
+        let available = cameraCurrent && proximityDriver.inputStatus.hasCurrentMeasurements
+        if let change = recoveryAnnouncements.update(available: available) {
+            lastState = .uncertain; lastRegion = nil; lastLabel = nil
+            switch change {
+            case .unavailable:
+                speech.speak("Sensor data is unavailable. Alerts will resume automatically when fresh data returns.",
+                             priority: .high, minRepeat: 8)
+            case .resumed:
+                speech.speak("Live sensor alerts resumed.", minRepeat: 8)
+            }
         }
-        let state = proximity.currentState
-        let event = proximity.lastEvent
-        let distance = event?.distanceMeters
-        let region = event?.region
-        let label = event?.triggeringLabel
+        guard available else {
+            statusText = cameraCurrent ? proximityDriver.statusText : AlertInputStatus.waitingForCamera.message
+            return
+        }
+        guard let event = liveProximityEvent else {
+            statusText = "Waiting for live proximity data"; return
+        }
+        let state = event.state
+        let distance = event.distanceMeters
+        let region = event.region
+        let label = event.triggeringLabel
         let now = CACurrentMediaTime()
-        statusText = "Running — \(state.rawValue)"
+        statusText = "\(proximityDriver.statusText) — \(state.rawValue)"
         // Bearing can wobble between adjacent buckets while the user turns. A
         // side-direction change is meaningful, but only after a quiet window; label
         // changes remain immediate because they usually indicate a new object.
@@ -195,8 +221,18 @@ final class GuidanceEngine {
             speech.speak("Start guidance first.", priority: .high)
             return
         }
-        guard let ar, let frame = ar.session.currentFrame, ar.isCurrentWorldFrame(frame) else {
-            speech.speak("Sensor tracking is unavailable. Please wait for tracking to recover.", priority: .high)
+        guard let ar, let frame = ar.session.currentFrame, ar.isCurrentFrame(frame),
+              proximityDriver.inputStatus.hasCurrentMeasurements else {
+            speech.speak("Current sensor data is unavailable. Alerts will resume automatically.", priority: .high)
+            return
+        }
+        guard ar.isCurrentWorldFrame(frame) else {
+            if let event = liveProximityEvent, let distance = event.distanceMeters, distance < 10 {
+                speech.speak("Map tracking is recovering. Current depth detects an obstacle \(direction(event.region)), \(distancePhrase(distance)).",
+                             priority: .high, minRepeat: 0)
+            } else {
+                speech.speak("Map tracking is recovering. I cannot describe the surrounding area yet.", priority: .high)
+            }
             return
         }
         var parts: [String] = []

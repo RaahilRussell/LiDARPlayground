@@ -106,8 +106,7 @@ final class WorldHazardMap {
             sessionGeneration = provider.sessionGeneration
         }
         guard let frame = provider.snapshot(), frame.trackingIsNormal else {
-            decay(now)
-            zones = []; corridorNearest = nil; lastRecomputeTime = 0
+            clearResults()
             return
         }
         let transform = frame.cameraTransform
@@ -117,7 +116,7 @@ final class WorldHazardMap {
             for obs in fusion.observations where !obs.uncertain && obs.nearestMeters.isFinite
                 && fusion.sessionGeneration == sessionGeneration
                 && obs.timestamp > lastFusionTimestamp
-                && ARSensorProvider.isFresh(timestamp: obs.timestamp, now: now) {
+                && provider.isCurrentObservation(timestamp: obs.timestamp) {
                 if let world = obs.positionWorld {
                     upsert(world: world, radius: 0.25, label: obs.label,
                            confidence: obs.confidence, now: obs.timestamp)
@@ -129,7 +128,7 @@ final class WorldHazardMap {
             // Ingest elevated LiDAR clusters (unlabeled geometry — covers walls, poles…).
             if spatial.hasWorldCoordinates, spatial.sessionGeneration == sessionGeneration,
                spatial.frameTimestamp > lastSpatialTimestamp,
-               ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) {
+               provider.isCurrentObservation(timestamp: spatial.frameTimestamp) {
                 for cluster in spatial.clusters {
                     let extent = cluster.maxBound - cluster.minBound
                     let radius = max(0.15, simd_length(extent) * 0.5)

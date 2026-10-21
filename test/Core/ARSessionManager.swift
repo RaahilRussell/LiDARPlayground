@@ -51,6 +51,25 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// Fraction 0...1 of depth pixels with usable (medium/high) confidence, or nil if unknown.
     private(set) var validDepthFraction: Double?
     private(set) var errorMessage: String?
+    private(set) var isRecoveringSensors = false
+
+    var canRetrySensorRecovery: Bool {
+        foregroundActive && userWantsRunning && !isUserPaused && !systemInterrupted && recoveryReason != nil
+    }
+
+    var sensorStatusMessage: String? {
+        if isUserPaused { return "Sensing is paused. Resume to continue camera, LiDAR, and alerts." }
+        if !foregroundActive { return nil }
+        if systemInterrupted { return "Camera access was interrupted. Your scan is retained; sensing resumes when access returns." }
+        guard let recoveryReason else { return nil }
+        if recoveryExhausted {
+            return "Sensing needs attention: \(recoveryReason) Your scan is retained. Retry sensing or save the last checkpoint."
+        }
+        if requiresRecoveryOriginProof, lastFrameTimestamp > 0 {
+            return "Camera data has returned. Slowly look around the same place to recover map alignment; the previous scan is retained."
+        }
+        return "Recovering camera and LiDAR (attempt \(recoveryPolicy.attempts) of \(SensorRecoveryPolicy.maximumAttempts)). Your scan is retained."
+    }
 
     /// Changes whenever previously published world coordinates become invalid.
     private(set) var sessionGeneration: Int = 0
@@ -94,17 +113,18 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     /// Completed image work may legitimately lag the newest camera frame, but
     /// must never publish observations captured before a pause/resume or reset.
-    func isCurrentObservation(timestamp: TimeInterval) -> Bool {
+    func isCurrentObservation(timestamp: TimeInterval, maxAge: TimeInterval = 0.5) -> Bool {
         runState == .running && Self.acceptsObservationTimestamp(timestamp,
             lastAccepted: lastFrameTimestamp, minimum: minimumFrameTimestamp,
-            now: CACurrentMediaTime())
+            now: CACurrentMediaTime(), maxAge: maxAge)
     }
 
     /// Camera-only previews/CV may use current images during relocalization.
     /// Anything placing data in the saved world must additionally pass this gate.
     func isCurrentWorldFrame(_ frame: ARFrame) -> Bool {
         guard isCurrentFrame(frame), trackingIsNormal, !isRelocalizing,
-              !restoringSavedMap, case .normal = frame.camera.trackingState else { return false }
+              !restoringSavedMap, !requiresRecoveryOriginProof,
+              case .normal = frame.camera.trackingState else { return false }
         return true
     }
 
@@ -115,10 +135,12 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     nonisolated static func acceptsObservationTimestamp(_ timestamp: TimeInterval,
-        lastAccepted: TimeInterval, minimum: TimeInterval, now: TimeInterval) -> Bool {
+        lastAccepted: TimeInterval, minimum: TimeInterval, now: TimeInterval,
+        maxAge: TimeInterval = 0.5) -> Bool {
         timestamp.isFinite && lastAccepted.isFinite && minimum.isFinite && now.isFinite &&
+        maxAge.isFinite && maxAge >= 0 &&
         lastAccepted > 0 && lastAccepted >= minimum &&
-        timestamp >= minimum && timestamp <= now && now - timestamp <= 0.5
+        timestamp >= minimum && timestamp <= now && now - timestamp <= maxAge
     }
 
     var relocalizationGuidance: String {
@@ -169,6 +191,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private(set) var removedMeshAnchorIDs: Set<UUID> = []
     private var meshStats: [UUID: (v: Int, f: Int)] = [:]
     private var reconstructionHeld = false
+    var hasHeldMappingCapture: Bool { reconstructionHeld }
     private var awaitingReconstructionReset = false
     private var reconstructionResetTimestamp: TimeInterval = 0
     private var retiredMeshIDs: Set<UUID> = []
@@ -212,6 +235,19 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private static let mapOriginAnchorName = "LiDARPlayground.saved-map-origin.v1"
     private var relocalizationTimeoutTask: Task<Void, Never>?
     private var minimumFrameTimestamp: TimeInterval = 0
+    private var liveOriginAnchor: ARAnchor?
+    private var requiresRecoveryOriginProof = false
+    private var systemInterrupted = false
+    private var recoveryPolicy = SensorRecoveryPolicy()
+    private var recoveryReason: String?
+    private var recoveryExhausted = false
+    private var depthRecoveryPending = false
+    private var depthMissingSince: TimeInterval?
+    private var automaticRecoveryAllowed = true
+    private var runStartedAt: TimeInterval = 0
+    private var recoveryWatchdog: Task<Void, Never>?
+    private var worldMapRequest: WorldMapSnapshotRequest?
+    private var mappingCaptureInProgress = false
 
     override init() {
         super.init()
@@ -260,12 +296,14 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         isUserPaused = false
         userWantsRunning = true
-        guard foregroundActive else { return }
-        guard runState != .running else { return }
+        guard foregroundActive, !systemInterrupted else { return }
+        if recoveryReason != nil { retrySensorRecovery(); return }
+        guard runState != .running else { startRecoveryWatchdog(); return }
         minimumFrameTimestamp = CACurrentMediaTime()
         errorMessage = nil
         runState = .running
-        if isRelocalizing { beginRelocalization(resetTimer: true) }
+        requiresRecoveryOriginProof = requiresRecoveryOriginProof || liveOriginAnchor != nil
+        if requiresRecoveryOriginProof || isRelocalizing { beginRelocalization(resetTimer: true) }
         runRequestedConfiguration()
     }
 
@@ -277,6 +315,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         runState = .paused
         relocalizationTimeoutTask?.cancel()
         relocalizationTimeoutTask = nil
+        stopRecoveryWatchdog()
+        cancelWorldMapRequest()
         invalidateLiveMetrics()
     }
 
@@ -285,6 +325,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         guard supportsWorldTracking else { return }
         errorMessage = nil
         pendingInitialWorldMap = nil
+        liveOriginAnchor = nil
+        resetSensorRecovery()
         restoringSavedMap = false
         restorationAnchorID = nil
         hasLocalizedMap = false
@@ -294,7 +336,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         clearDerivedState()
         pendingRunOptions = [.resetTracking, .removeExistingAnchors]
         if supportsMesh { pendingRunOptions.insert(.resetSceneReconstruction) }
-        if userWantsRunning && foregroundActive {
+        if userWantsRunning && foregroundActive && !systemInterrupted {
             runState = .running
             runRequestedConfiguration()
         } else {
@@ -316,7 +358,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     @discardableResult
     func beginMappingSegment() -> Bool {
         guard supportsMesh, foregroundActive, userWantsRunning, !isUserPaused,
-              runState == .running, !isRelocalizing else { return false }
+              reconstructionHeld,
+              let frame = session.currentFrame, isCurrentWorldFrame(frame) else { return false }
         retiredMeshIDs = Set(meshStats.keys)
         retiredMeshIDs.formUnion(session.currentFrame?.anchors.compactMap {
             ($0 as? ARMeshAnchor)?.identifier
@@ -351,11 +394,14 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func runRequestedConfiguration() {
+        reclaimSessionDelegate()
         let configuration = makeConfiguration()
         configuration.initialWorldMap = pendingInitialWorldMap
         let options = pendingRunOptions
         pendingRunOptions = []
+        runStartedAt = CACurrentMediaTime()
         session.run(configuration, options: options)
+        startRecoveryWatchdog()
     }
 
     func restoreWorldMap(_ worldMap: ARWorldMap) throws {
@@ -364,20 +410,22 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             throw MappingSessionError.invalidArchive
         }
         sessionGeneration += 1
+        resetSensorRecovery()
         minimumFrameTimestamp = CACurrentMediaTime()
         clearDerivedState()
         hasLocalizedMap = false
         restoringSavedMap = true
         restorationAnchorID = origin.identifier
+        liveOriginAnchor = origin
         pendingInitialWorldMap = worldMap
         pendingRunOptions = [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction]
         userWantsRunning = true
         isUserPaused = false
         errorMessage = nil
-        runState = foregroundActive ? .running : .interrupted
+        runState = foregroundActive && !systemInterrupted ? .running : .interrupted
         finishRelocalization()
         beginRelocalization()
-        if foregroundActive { runRequestedConfiguration() }
+        if foregroundActive && !systemInterrupted { runRequestedConfiguration() }
     }
 
     func cancelRelocalization() { startNewMap() }
@@ -386,6 +434,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     func handleResignActive() {
         foregroundActive = false
+        stopRecoveryWatchdog()
+        cancelWorldMapRequest()
         relocalizationTimeoutTask?.cancel()
         relocalizationTimeoutTask = nil
         relocalizationTimedOut = false
@@ -399,12 +449,142 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     func handleBecameActive() {
         foregroundActive = true
+        guard !systemInterrupted else { return }
         if userWantsRunning && runState != .running {
+            if recoveryReason != nil { retrySensorRecovery(); return }
             minimumFrameTimestamp = CACurrentMediaTime()
             runState = .running
+            requiresRecoveryOriginProof = liveOriginAnchor != nil
             beginRelocalization(resetTimer: true)
             runRequestedConfiguration()
         }
+    }
+
+    // MARK: - Non-destructive sensor recovery
+
+    /// A retry never removes anchors or resets world tracking. If ARKit cannot
+    /// recover this world, its retained checkpoint remains available to save.
+    func retrySensorRecovery() {
+        guard foregroundActive, userWantsRunning, !isUserPaused, !systemInterrupted else { return }
+        recoveryPolicy.reset()
+        recoveryExhausted = false
+        depthRecoveryPending = false
+        depthMissingSince = nil
+        automaticRecoveryAllowed = true
+        beginSensorRecovery(reason: recoveryReason ?? "Camera data stopped arriving.")
+        checkSensorHealth()
+    }
+
+    private func reclaimSessionDelegate() {
+        if session.delegate !== self { session.delegate = self }
+        session.delegateQueue = nil
+    }
+
+    private func startRecoveryWatchdog() {
+        guard recoveryWatchdog == nil, foregroundActive, userWantsRunning,
+              !isUserPaused, !systemInterrupted else { return }
+        recoveryWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self else { return }
+                self.checkSensorHealth()
+            }
+        }
+    }
+
+    private func stopRecoveryWatchdog() {
+        recoveryWatchdog?.cancel()
+        recoveryWatchdog = nil
+    }
+
+    private func resetSensorRecovery() {
+        stopRecoveryWatchdog()
+        cancelWorldMapRequest()
+        recoveryPolicy.reset()
+        recoveryReason = nil
+        recoveryExhausted = false
+        depthRecoveryPending = false
+        depthMissingSince = nil
+        automaticRecoveryAllowed = true
+        requiresRecoveryOriginProof = false
+        isRecoveringSensors = false
+    }
+
+    private func beginSensorRecovery(reason: String) {
+        recoveryReason = reason
+        recoveryPolicy.lostFrames()
+        // Never let late work or an older currentFrame cross this run boundary.
+        minimumFrameTimestamp = CACurrentMediaTime()
+        cancelWorldMapRequest()
+        invalidateLiveMetrics()
+        requiresRecoveryOriginProof = liveOriginAnchor != nil || restoringSavedMap || meshFaceCount > 0
+        if userWantsRunning, foregroundActive, !systemInterrupted {
+            runState = .running
+            isRecoveringSensors = automaticRecoveryAllowed
+            if requiresRecoveryOriginProof { beginRelocalization(resetTimer: true) }
+            startRecoveryWatchdog()
+        }
+        if !automaticRecoveryAllowed {
+            recoveryExhausted = true
+            isRecoveringSensors = false
+        }
+    }
+
+    private func checkSensorHealth() {
+        guard foregroundActive, userWantsRunning, !isUserPaused, !systemInterrupted else { return }
+        // A newly attached ARSCNView can take the shared session's delegate.
+        // Reclaim ownership first and give it time to deliver its next frame.
+        if session.delegate !== self {
+            reclaimSessionDelegate()
+            runStartedAt = CACurrentMediaTime()
+            return
+        }
+        guard automaticRecoveryAllowed, !recoveryExhausted else { return }
+        let now = CACurrentMediaTime()
+        if supportsSceneDepth, let depthMissingSince,
+           now - depthMissingSince >= SensorRecoveryPolicy.startupGrace,
+           lastFrameTimestamp > 0, now - lastFrameTimestamp < 0.5,
+           trackingIsNormal, !isRelocalizing, !depthRecoveryPending {
+            depthRecoveryPending = true
+            beginSensorRecovery(reason: "LiDAR depth data stopped arriving.")
+        }
+        if requiresRecoveryOriginProof, lastFrameTimestamp > 0, now - lastFrameTimestamp < 0.5 {
+            if relocalizationTimedOut {
+                recoveryReason = "The previous map's alignment is not confirmed."
+                recoveryExhausted = true
+                isRecoveringSensors = false
+                errorMessage = "Camera data returned, but the previous map's alignment is not confirmed. Retry in the same place or save the last checkpoint."
+            }
+            return // Fresh camera images are not a sensor stall.
+        }
+        let decision = recoveryPolicy.decision(now: now, runStartedAt: runStartedAt,
+            lastFrameAt: lastFrameTimestamp, foreground: foregroundActive,
+            wantsRunning: userWantsRunning, interrupted: systemInterrupted,
+            failed: recoveryReason != nil && (lastFrameTimestamp == 0 || depthRecoveryPending))
+        switch decision {
+        case .wait: return
+        case .exhausted:
+            recoveryExhausted = true
+            isRecoveringSensors = false
+            errorMessage = "Camera and LiDAR data have not resumed. Your scan is retained. Retry sensing or save the last checkpoint."
+        case .retry:
+            if recoveryReason == nil { beginSensorRecovery(reason: "Camera data stopped arriving.") }
+            recoveryPolicy.didAttempt(at: now)
+            isRecoveringSensors = true
+            minimumFrameTimestamp = now
+            runStartedAt = now
+            invalidateLiveMetrics()
+            runState = .running
+            reclaimSessionDelegate()
+            // Reuse this exact coordinate system. Reinjecting an old initial map
+            // or resetTracking here would silently discard newer observations.
+            session.run(makeConfiguration(), options: [])
+        }
+    }
+
+    private func cancelWorldMapRequest() {
+        worldMapRequest?.finish(.failure(MappingSessionError.changedSession))
+        worldMapRequest = nil
     }
 
     @objc private nonisolated func thermalStateChanged() {
@@ -430,6 +610,9 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
         MainActor.assumeIsolated {
+            self.systemInterrupted = true
+            self.stopRecoveryWatchdog()
+            self.cancelWorldMapRequest()
             if self.userWantsRunning { self.runState = .interrupted }
             self.relocalizationTimeoutTask?.cancel()
             self.relocalizationTimeoutTask = nil
@@ -440,10 +623,18 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
         MainActor.assumeIsolated {
+            self.systemInterrupted = false
             guard self.userWantsRunning, self.foregroundActive else { return }
             self.minimumFrameTimestamp = CACurrentMediaTime()
             self.runState = .running
+            self.requiresRecoveryOriginProof = self.liveOriginAnchor != nil
             self.beginRelocalization(resetTimer: true)
+            self.runStartedAt = CACurrentMediaTime()
+            self.reclaimSessionDelegate()
+            self.startRecoveryWatchdog()
+            if !self.pendingRunOptions.isEmpty || self.session.configuration == nil {
+                self.runRequestedConfiguration()
+            }
         }
     }
 
@@ -455,23 +646,16 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
         let message = error.localizedDescription
+        let code = (error as? ARError)?.code
         MainActor.assumeIsolated {
             self.errorMessage = message
-            self.runState = .idle
-            self.userWantsRunning = false
-            // A failed session may no longer preserve its coordinate frame.
-            // A later Start must not reuse saved overlays or perception caches
-            // as though that old world had survived the failure.
-            self.sessionGeneration += 1
-            self.minimumFrameTimestamp = CACurrentMediaTime()
-            self.pendingInitialWorldMap = nil
-            self.restoringSavedMap = false
-            self.restorationAnchorID = nil
-            self.hasLocalizedMap = false
-            self.pendingRunOptions = [.resetTracking, .removeExistingAnchors]
-            if self.supportsMesh { self.pendingRunOptions.insert(.resetSceneReconstruction) }
-            self.clearDerivedState()
-            self.finishRelocalization()
+            // Failure does not authorize a new coordinate space or destroying
+            // the user's unsaved surfaces, path, and checkpoint. Live world use
+            // remains blocked until a fresh frame proves the original anchor.
+            self.automaticRecoveryAllowed = code != .cameraUnauthorized &&
+                code != .unsupportedConfiguration && code != .invalidConfiguration && code != .invalidWorldMap
+            self.beginSensorRecovery(reason: message)
+            self.checkSensorHealth()
         }
     }
 
@@ -518,7 +702,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func applyMesh(updates: [UUID: (v: Int, f: Int)], removed: [UUID]) {
-        guard !reconstructionHeld else { return }
+        guard !reconstructionHeld, !requiresRecoveryOriginProof else { return }
         mappingRevision &+= 1
         for (id, value) in updates {
             guard segmentMeshIDs == nil || !retiredMeshIDs.contains(id) || retiredMeshRemovals.contains(id) else { continue }
@@ -564,8 +748,30 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private func ingest(frame: ARFrame) {
         guard runState == .running, frame.timestamp >= minimumFrameTimestamp else { return }
         let t = frame.timestamp
-        let hasRestoredOrigin = !restoringSavedMap || frame.anchors.contains { $0.identifier == restorationAnchorID }
+        let expectedOrigin = restoringSavedMap ? restorationAnchorID : liveOriginAnchor?.identifier
+        let needsProof = restoringSavedMap || requiresRecoveryOriginProof
+        let hasRestoredOrigin = !needsProof || (expectedOrigin != nil && frame.anchors.contains { $0.identifier == expectedOrigin })
         updateTracking(frame.camera.trackingState, acceptsLocalization: hasRestoredOrigin)
+        if case .normal = frame.camera.trackingState, hasRestoredOrigin {
+            requiresRecoveryOriginProof = false
+            if needsProof {
+                // Mesh callbacks may precede the frame that proves alignment.
+                // Reconcile those safe, current anchors after the proof arrives.
+                applyMesh(updates: Self.meshCounts(frame.anchors), removed: [])
+            }
+            if liveOriginAnchor == nil {
+                let anchor = ARAnchor(name: Self.mapOriginAnchorName, transform: matrix_identity_float4x4)
+                liveOriginAnchor = anchor
+                session.add(anchor: anchor)
+            }
+            if recoveryReason != nil, !depthRecoveryPending || frame.sceneDepth != nil || frame.smoothedSceneDepth != nil {
+                recoveryReason = nil
+                recoveryExhausted = false
+                isRecoveringSensors = false
+                errorMessage = nil
+                depthRecoveryPending = false
+            }
+        }
         worldMappingStatus = frame.worldMappingStatus
         if awaitingReconstructionReset, frame.timestamp >= reconstructionResetTimestamp,
            frame.anchors.contains(where: { anchor in
@@ -583,8 +789,11 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         fpsLastTimestamp = t
         lastFrameTimestamp = t
+        if !depthRecoveryPending { recoveryPolicy.observedFrame(at: t) }
         frameTimestampTap?(t)
         isDepthAvailable = (frame.sceneDepth != nil) || (frame.smoothedSceneDepth != nil)
+        if isDepthAvailable { depthMissingSince = nil }
+        else if depthMissingSince == nil { depthMissingSince = t }
 
         updatePose(frame: frame, time: t)
         maybeComputeValidDepth(frame: frame)
@@ -631,11 +840,12 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         validDepthComputeInFlight = true
         lastValidDepthComputeTime = now
         let generation = sessionGeneration
+        let capturedAt = frame.timestamp
 
         Task { [weak self] in
             let fraction = await ARSessionManager.usableFractionAsync(confidence)
             guard let self else { return }
-            if self.sessionGeneration == generation, self.runState == .running {
+            if self.sessionGeneration == generation, self.isCurrentObservation(timestamp: capturedAt) {
                 self.validDepthFraction = fraction
             }
             self.validDepthComputeInFlight = false
@@ -687,6 +897,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         lastFrameTimestamp = 0
         isDepthAvailable = false
         validDepthFraction = nil
+        depthMissingSince = nil
     }
 
     private func updateTracking(_ state: ARCamera.TrackingState, acceptsLocalization: Bool = false) {
@@ -769,21 +980,35 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     func captureMappingSnapshot(holdReconstructionAfterCapture: Bool = false) async throws -> MappingSessionCapture {
         guard supportsMesh else { throw MappingSessionError.unsupported }
         guard canSaveWorldMap else { throw MappingSessionError.notReady }
+        guard !mappingCaptureInProgress else { throw MappingSessionError.captureBusy }
+        mappingCaptureInProgress = true
+        defer { mappingCaptureInProgress = false }
         let generation = sessionGeneration
+        let request = WorldMapSnapshotRequest()
+        worldMapRequest = request
+        defer { if worldMapRequest === request { worldMapRequest = nil } }
         let worldMap: ARWorldMap = try await withCheckedThrowingContinuation { continuation in
+            request.continuation = continuation
+            request.timeoutTask = Task { [weak request] in
+                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                request?.finish(.failure(MappingSessionError.captureTimedOut))
+            }
             session.getCurrentWorldMap { map, error in
-                if let error { continuation.resume(throwing: error) }
-                else if let map { continuation.resume(returning: map) }
-                else { continuation.resume(throwing: MappingSessionError.notReady) }
+                Task { @MainActor in
+                    if let error { request.finish(.failure(error)) }
+                    else if let map { request.finish(.success(map)) }
+                    else { request.finish(.failure(MappingSessionError.notReady)) }
+                }
             }
         }
+        if worldMapRequest === request { worldMapRequest = nil }
         guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
         let (geometry, imageBuffer, orientation) = try copyMappingGeometry()
-        // A restored anchor proves a normal frame belongs to this saved world,
-        // not a final frame from the session that ran immediately before loading.
-        // Replacing the marker also prevents old map markers from accumulating.
+        // The same identity lives in the active session and every checkpoint.
+        // It can therefore prove continuity after a dropout as well as restore.
+        guard let origin = liveOriginAnchor else { throw MappingSessionError.notReady }
         worldMap.anchors.removeAll { $0.name == Self.mapOriginAnchorName }
-        worldMap.anchors.append(ARAnchor(name: Self.mapOriginAnchorName, transform: matrix_identity_float4x4))
+        worldMap.anchors.append(origin)
         let data = try await Task.detached(priority: .userInitiated) {
             let worldData = try NSKeyedArchiver.archivedData(withRootObject: worldMap, requiringSecureCoding: true)
             guard worldData.count <= MapLimits.maxWorldMapBytes else { throw MappingSessionError.tooLarge }
@@ -799,8 +1024,10 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             }
             return (worldData, preview)
         }.value
-        guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
-        if holdReconstructionAfterCapture {
+        // Encoding an already valid immutable snapshot must survive a later
+        // dropout/pause. Only a deliberate change of world invalidates it.
+        guard generation == sessionGeneration else { throw MappingSessionError.changedSession }
+        if holdReconstructionAfterCapture, canSaveWorldMap {
             // Copy once more after encoding, then stop reconstruction intake.
             // No throwing work remains after the hold begins: the coordinator
             // can always retain this immutable capture if the disk write fails.
@@ -851,7 +1078,7 @@ nonisolated struct MappingSessionCapture: Sendable {
 }
 
 nonisolated enum MappingSessionError: LocalizedError, Equatable {
-    case unsupported, notReady, noSurface, tooLarge, changedSession, invalidArchive
+    case unsupported, notReady, noSurface, tooLarge, changedSession, invalidArchive, captureBusy, captureTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -861,6 +1088,24 @@ nonisolated enum MappingSessionError: LocalizedError, Equatable {
         case .tooLarge: return "This scan is too large to save as one place. Start a separate map for the next area."
         case .changedSession: return "The scan changed or tracking stopped while saving. Please try saving again."
         case .invalidArchive: return "The saved localization data could not be opened. The 3D preview may still be available."
+        case .captureBusy: return "A map checkpoint is already being captured. Wait for it to finish before saving again."
+        case .captureTimedOut: return "Camera tracking did not return a map in time. Retry sensing, or save the last available checkpoint."
         }
+    }
+}
+
+/// ARKit's callback has no cancellation API. Finish at most once, allowing a
+/// timeout/reset to release the caller while safely ignoring a late callback.
+@MainActor
+final class WorldMapSnapshotRequest {
+    var continuation: CheckedContinuation<ARWorldMap, Error>?
+    var timeoutTask: Task<Void, Never>?
+
+    func finish(_ result: Result<ARWorldMap, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        continuation.resume(with: result)
     }
 }

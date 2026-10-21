@@ -48,6 +48,22 @@ final class MappingCoordinator {
     private var pendingSegmentCapture: MappingSessionCapture?
     private var pendingSegmentGeneration: Int?
     private var pendingSegmentNeedsRefresh = false
+    private var retainedArchive: MapArchive?
+    private var retainedGeneration: Int?
+    private var checkpointCapturedAt: Date?
+
+    /// A complete immutable checkpoint can be written without requesting another
+    /// camera frame. It is never combined with observations from another world.
+    private var availableCheckpoint: MapArchive? {
+        retainedGeneration == manager.sessionGeneration ? retainedArchive : nil
+    }
+    var retainedCheckpointAt: Date? { availableCheckpoint == nil ? nil : checkpointCapturedAt }
+    var isSavingRetainedCheckpoint: Bool {
+        availableCheckpoint != nil && (!manager.canSaveWorldMap || pendingSegmentCapture != nil)
+    }
+    var canSaveMap: Bool {
+        availableCheckpoint != nil || (manager.canSaveWorldMap && pendingSegmentCapture == nil)
+    }
 
     /// Saving and live sensing have independent failure recovery. A storage
     /// error must not turn off the shared camera used by CV and LiDAR diagnostics.
@@ -198,6 +214,16 @@ final class MappingCoordinator {
             automaticState = "Mapping paused"
             return
         }
+        if manager.isRecoveringSensors || manager.canRetrySensorRecovery {
+            // A capture failure is not evidence that the user moved to another
+            // place. Keep its origin/checkpoint through recovery and never let
+            // the launch auto-restore timeout silently start a replacement map.
+            automaticRestoreAttempt = false
+            automaticState = manager.sensorStatusMessage ?? "Recovering sensor data; your checkpoint is retained"
+            navigation.pause()
+            textRecognition.pause()
+            return
+        }
         if let failure = manager.errorMessage {
             UIApplication.shared.isIdleTimerDisabled = false
             automaticState = "Camera stopped: \(failure)"
@@ -297,7 +323,7 @@ final class MappingCoordinator {
     }
 
     func saveMap(name: String) async {
-        guard pendingSegmentCapture == nil else {
+        guard pendingSegmentCapture == nil || availableCheckpoint != nil else {
             errorMessage = "A storage segment is waiting for its final checkpoint. Tap Retry Saving to retry it and continue."
             return
         }
@@ -313,12 +339,28 @@ final class MappingCoordinator {
             guard !normalizedName.isEmpty, normalizedName.count <= 80 else {
                 throw MappingCoordinatorError.invalidName
             }
+            if !automatic, !closeSegment, isSavingRetainedCheckpoint {
+                return try await saveRetainedCheckpoint(name: normalizedName,
+                    operation: operation, generation: generation)
+            }
             let capture: MappingSessionCapture
             if closeSegment, pendingSegmentGeneration == generation,
                !pendingSegmentNeedsRefresh, let pendingSegmentCapture {
                 capture = pendingSegmentCapture
             } else {
-                let latest = try await manager.captureMappingSnapshot(holdReconstructionAfterCapture: closeSegment)
+                let latest: MappingSessionCapture
+                do {
+                    latest = try await manager.captureMappingSnapshot(holdReconstructionAfterCapture: closeSegment)
+                } catch {
+                    // Tracking can stop after Save was tapped. Preserve the
+                    // user's request using the last complete snapshot instead.
+                    if !automatic, !closeSegment, availableCheckpoint != nil,
+                       isCurrent(operation), generation == manager.sessionGeneration {
+                        return try await saveRetainedCheckpoint(name: normalizedName,
+                            operation: operation, generation: generation)
+                    }
+                    throw error
+                }
                 if closeSegment, pendingSegmentGeneration == generation, let pendingSegmentCapture {
                     var geometry = try Self.merging(baseline: pendingSegmentCapture.geometry,
                         current: latest.geometry, excluding: manager.removedMeshAnchorIDs)
@@ -334,7 +376,10 @@ final class MappingCoordinator {
                 if closeSegment {
                     pendingSegmentCapture = capture
                     pendingSegmentGeneration = generation
-                    pendingSegmentNeedsRefresh = false
+                    // A valid checkpoint may finish encoding after sensors
+                    // paused, without freezing reconstruction. Refresh it once
+                    // healthy before rotating away any subsequently seen mesh.
+                    pendingSegmentNeedsRefresh = !manager.hasHeldMappingCapture
                 }
             }
             await colorCapture.flush()
@@ -368,7 +413,9 @@ final class MappingCoordinator {
             let archive = MapArchive(metadata: metadata, geometry: geometry,
                                      worldMapData: capture.worldMapData,
                                      referenceImageData: capture.referenceImageData)
-            try archive.validate()
+            // Retain before disk I/O: a storage error must not throw away the
+            // only complete world-map/geometry pair available during a dropout.
+            try retainCheckpoint(archive, generation: generation, capturedAt: now)
             try await store.save(archive)
             guard isCurrent(operation), generation == manager.sessionGeneration else { return false }
             if !continuesSavedMap {
@@ -405,6 +452,38 @@ final class MappingCoordinator {
             }
             return false
         }
+    }
+
+    func retainCheckpoint(_ archive: MapArchive, generation: Int, capturedAt: Date) throws {
+        guard generation == manager.sessionGeneration else { return }
+        try archive.validate()
+        guard capturedAt.timeIntervalSince1970.isFinite else { throw MappingSessionError.invalidArchive }
+        retainedArchive = archive
+        retainedGeneration = generation
+        checkpointCapturedAt = capturedAt
+    }
+
+    private func saveRetainedCheckpoint(name: String, operation: UUID, generation: Int) async throws -> Bool {
+        guard var archive = availableCheckpoint, let capturedAt = checkpointCapturedAt else {
+            throw MappingSessionError.notReady
+        }
+        archive.metadata.name = name
+        // Preserve the observation timestamp. A later save must not make old
+        // geometry appear to contain observations from the sensor outage.
+        try await store.save(archive)
+        guard isCurrent(operation), generation == manager.sessionGeneration else { return false }
+        retainedArchive = archive
+        storedActiveMap = archive.metadata
+        activeGeneration = generation
+        storedGeometry = archive.geometry
+        storedReferenceImageData = archive.referenceImageData
+        lastSavedAt = Date()
+        if pendingSegmentCapture == nil { automaticSaveBlocked = false }
+        let saved = try await store.list()
+        guard isCurrent(operation), generation == manager.sessionGeneration else { return false }
+        maps = saved
+        statusMessage = "Saved \(name) using the last valid checkpoint, last updated \(capturedAt.formatted(date: .omitted, time: .standard)). Scanning after that checkpoint is not included. Live mapping resumes when tracking recovers."
+        return true
     }
 
     func handleAutomaticSaveFailure(_ error: Error) {
@@ -478,6 +557,7 @@ final class MappingCoordinator {
             storedGeometry = archive.geometry
             storedReferenceImageData = archive.referenceImageData
             observedGeneration = manager.sessionGeneration
+            try retainCheckpoint(archive, generation: observedGeneration, capturedAt: archive.metadata.updatedAt)
             colorCapture.restore(geometry: archive.geometry, generation: observedGeneration)
             navigation.restore(graph: archive.geometry.navigation)
             textRecognition.restore(annotations: archive.geometry.textAnnotations,
@@ -505,6 +585,9 @@ final class MappingCoordinator {
             if deletedActive {
                 // A continued scan can still be saved, but must receive a new ID.
                 storedActiveMap = nil
+                retainedArchive = nil
+                retainedGeneration = nil
+                checkpointCapturedAt = nil
                 pauseAutomaticMapping()
                 lastSavedAt = nil
             }
@@ -544,6 +627,9 @@ final class MappingCoordinator {
     }
 
     private func beginNextSegment(after previous: SavedMapMetadata) {
+        retainedArchive = nil
+        retainedGeneration = nil
+        checkpointCapturedAt = nil
         storedActiveMap = nil
         storedGeometry = nil
         storedReferenceImageData = nil
@@ -567,6 +653,9 @@ final class MappingCoordinator {
     }
 
     private func clearActivePlace() {
+        retainedArchive = nil
+        retainedGeneration = nil
+        checkpointCapturedAt = nil
         storedActiveMap = nil
         activeGeneration = nil
         requiresRelocalization = false

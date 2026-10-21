@@ -30,6 +30,7 @@ enum AppMode: String, CaseIterable, Identifiable {
 }
 
 struct AppRootView: View {
+    @Environment(ARSessionManager.self) private var ar
     @Environment(MappingCoordinator.self) private var mapping
     @State private var mode: AppMode = .camera
     @State private var lidarTool: LiDARTool = .depth
@@ -61,6 +62,23 @@ struct AppRootView: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .background(Theme.panel)
+
+            if let status = ar.sensorStatusMessage {
+                HStack(alignment: .top, spacing: 10) {
+                    Label(status, systemImage: ar.isRecoveringSensors ? "arrow.clockwise" : "info.circle")
+                        .font(.footnote)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("sensors.status")
+                    if ar.canRetrySensorRecovery {
+                        Button("Retry Sensing") { ar.retrySensorRecovery() }
+                            .font(.footnote.bold())
+                            .fixedSize()
+                            .accessibilityIdentifier("sensors.retry")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10).background(Theme.panel)
+            }
 
             if mapping.automaticSaveNeedsAttention && mode != .mapping {
                 HStack {

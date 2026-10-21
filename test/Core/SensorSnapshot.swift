@@ -18,6 +18,7 @@ struct SensorSnapshot {
     var depthWidth: Int
     var depthHeight: Int
     var trackingQuality: String
+    var hasWorldCoordinates: Bool
     /// 8×8 grid of depth values in metres (-1 == invalid).
     var sampleDepthGrid: [[Float]]
     /// Example 3D points (world space, metres) from the grid.
@@ -28,7 +29,8 @@ extension ARSessionManager {
 
     /// Builds a display snapshot from the current frame, or nil if none yet.
     func liveSnapshot(gridSize: Int = 8) -> SensorSnapshot? {
-        guard let frame = session.currentFrame else { return nil }
+        guard let frame = session.currentFrame, isCurrentFrame(frame) else { return nil }
+        let worldTrackingValid = isCurrentWorldFrame(frame)
         let depthData = frame.smoothedSceneDepth ?? frame.sceneDepth
         let depthMap = depthData?.depthMap
         let dw = depthMap.map { CVPixelBufferGetWidth($0) } ?? 0
@@ -49,6 +51,7 @@ extension ARSessionManager {
                     if let d = DepthProcessing.sampleDistance(depth: depthMap,
                                                               normalizedPoint: CGPoint(x: nx, y: ny)) {
                         grid[gy][gx] = d
+                        guard worldTrackingValid else { continue }
                         let world = Self.unprojectToWorld(nx: Float(nx), ny: Float(ny), depth: d,
                                                           intrinsics: intrinsics,
                                                           depthWidth: dw, depthHeight: dh,
@@ -67,6 +70,7 @@ extension ARSessionManager {
             imageResolution: imageRes,
             depthWidth: dw, depthHeight: dh,
             trackingQuality: ARSessionManager.describe(frame.camera.trackingState),
+            hasWorldCoordinates: worldTrackingValid,
             sampleDepthGrid: grid,
             samplePoints: points)
     }

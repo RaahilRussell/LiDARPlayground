@@ -77,7 +77,7 @@ final class SpatialAlgorithmsEngine {
             clearResults()
             sessionGeneration = provider.sessionGeneration
         }
-        guard provider.isRunning, let frame = provider.snapshot(),
+        guard provider.isRunning, let frame = provider.cameraSnapshot(),
               let depthMap = frame.smoothedDepthMap ?? frame.depthMap else {
             clearResults()
             return
@@ -93,9 +93,9 @@ final class SpatialAlgorithmsEngine {
         let generation = provider.sessionGeneration
         let start = CACurrentMediaTime()
         let computed = await Self.compute(frame: frame, depthMap: depthMap, stride: s)
-        guard !Task.isCancelled, provider.isRunning,
+        guard !Task.isCancelled,
               provider.sessionGeneration == generation,
-              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
+              provider.isCurrentObservation(timestamp: frame.timestamp) else { return }
         lastMs = (CACurrentMediaTime() - start) * 1000
         frameTimestamp = frame.timestamp
         hasWorldCoordinates = frame.trackingIsNormal
@@ -105,8 +105,12 @@ final class SpatialAlgorithmsEngine {
         occupancy = computed.occupancy
 
         let now = CACurrentMediaTime()
-        let obs = fusion?.observations ?? []
-        tracked = tracker.update(with: obs, now: now)
+        if frame.trackingIsNormal {
+            let obs = fusion?.observations ?? []
+            tracked = tracker.update(with: obs, now: now)
+        } else {
+            tracker.reset(); tracked = []
+        }
 
         snapshot = SpatialSnapshot(groundPoints: computed.ground, elevatedPoints: computed.elevated,
                                    clusters: computed.clusters, floor: computed.floor,
@@ -169,7 +173,13 @@ final class SpatialAlgorithmsEngine {
                 y += stride
             }
 
-            let pointsForGeom = useWorld ? worldPoints : cameraPoints
+            let occupancy = SpatialAlgorithms.occupancy(cameraPoints: cameraPoints, confidences: confs)
+            // Distances in the current camera frame remain usable while world
+            // tracking recovers. Never publish these as floor/world geometry.
+            guard useWorld else {
+                return Computed(ground: [], elevated: [], clusters: [], floor: nil, occupancy: occupancy)
+            }
+            let pointsForGeom = worldPoints
             let floor = SpatialAlgorithms.estimateFloor(points: pointsForGeom)
             var ground = [SIMD3<Float>](), elevated = pointsForGeom
             if let floor {
@@ -177,7 +187,6 @@ final class SpatialAlgorithmsEngine {
                 ground = split.ground; elevated = split.elevated
             }
             let clusters = SpatialAlgorithms.cluster(points: elevated)
-            let occupancy = SpatialAlgorithms.occupancy(cameraPoints: cameraPoints, confidences: confs)
             return Computed(ground: ground, elevated: elevated, clusters: clusters,
                             floor: floor, occupancy: occupancy)
         }.value

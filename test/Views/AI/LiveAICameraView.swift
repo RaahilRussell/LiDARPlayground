@@ -22,13 +22,22 @@ struct LiveAICameraView: View {
             Theme.background.ignoresSafeArea()
             if ar.supportsWorldTracking {
                 cameraWithOverlay
-            } else {
-                ComingSoonView(title: "Needs a device",
-                               milestone: "Run on your iPhone 15 Pro Max for the live camera + YOLO segmentation.",
-                               systemImage: "exclamationmark.triangle.fill")
             }
             VStack(spacing: 8) {
-                if ar.supportsWorldTracking { detectionsBar }
+                if ar.supportsWorldTracking {
+                    detectionsBar
+                } else {
+                    Panel {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Live AI needs a camera device", systemImage: "camera.viewfinder")
+                                .font(.headline)
+                            Text("Run on your iPhone 15 Pro Max for live camera detections and segmentation. Model settings remain available here.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .accessibilityIdentifier("vision.cameraUnavailable")
+                }
                 Spacer()
                 controls
             }
@@ -44,34 +53,20 @@ struct LiveAICameraView: View {
     // MARK: - Camera + detection overlay
 
     private var cameraWithOverlay: some View {
-        GeometryReader { geo in
-            ZStack {
-                ARSCNCameraView(manager: ar)
-                    .ignoresSafeArea()
-
-                // Combined segmentation mask (quick overlay).
-                if let mask = vision.latestResult?.combinedMask {
-                    Image(decorative: mask, scale: 1, orientation: .up)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .opacity(vision.maskOpacity)
-                        .allowsHitTesting(false)
-                        .clipped()
-                }
-
-                // Boxes + labels.
-                if let result = vision.latestResult {
-                    ForEach(result.objects) { obj in
-                        boxOverlay(obj, in: geo.size)
+        PerceptionCameraOverlay(manager: ar, mask: vision.latestResult?.combinedMask,
+                                maskOpacity: vision.maskOpacity,
+                                frameTimestamp: vision.latestResult?.frameTimestamp ?? 0) { transform, size in
+            if let transform, let result = vision.latestResult {
+                ForEach(result.objects) { obj in
+                    if let rect = CameraOverlayGeometry.box(obj.boxNormalized, transform: transform) {
+                        boxOverlay(obj, rect: rect)
                     }
                 }
             }
         }
     }
 
-    private func boxOverlay(_ obj: DetectedObject, in size: CGSize) -> some View {
-        let rect = mapFill(obj.boxNormalized, imageAspect: 3.0 / 4.0, in: size)
+    private func boxOverlay(_ obj: DetectedObject, rect: CGRect) -> some View {
         let color = Self.classColor(for: obj.label)
         let labelText = "\(obj.label) \(Int(obj.confidence * 100))%"
         return ZStack(alignment: .topLeading) {
@@ -181,24 +176,6 @@ struct LiveAICameraView: View {
         var hasher = Hasher(); hasher.combine(label)
         let hue = Double(abs(hasher.finalize()) % 360) / 360.0
         return Color(hue: hue, saturation: 0.75, brightness: 0.95)
-    }
-
-    /// Maps a normalized rect (origin top-left) through an aspect-FILL of a source
-    /// image of `imageAspect` (w/h) into the view — matching the camera background.
-    private func mapFill(_ n: CGRect, imageAspect: CGFloat, in size: CGSize) -> CGRect {
-        let viewAspect = size.width / size.height
-        var dispW = size.width, dispH = size.height
-        if viewAspect > imageAspect {
-            dispW = size.width
-            dispH = dispW / imageAspect
-        } else {
-            dispH = size.height
-            dispW = dispH * imageAspect
-        }
-        let ox = (size.width - dispW) / 2
-        let oy = (size.height - dispH) / 2
-        return CGRect(x: ox + n.minX * dispW, y: oy + n.minY * dispH,
-                      width: n.width * dispW, height: n.height * dispH)
     }
 
     // MARK: - Controls / model manager

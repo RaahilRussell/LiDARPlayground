@@ -60,9 +60,17 @@ final class ToolAccessUITests: XCTestCase {
         let button = app.buttons["\(section).tool.\(tool)"]
         let row = app.scrollViews["\(section).tools"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
-        for _ in 0..<6 where !button.isHittable {
-            row.swipeLeft()
+        XCTAssertTrue(button.exists)
+        // XCTest can fail while asking isHittable for a completely clipped
+        // SwiftUI button. Reveal its actual frame before testing hit detection.
+        for _ in 0..<6 {
+            let viewport = row.frame.intersection(app.frame)
+            if viewport.contains(button.frame) { break }
+            if button.frame.midX < viewport.midX { row.swipeRight() }
+            else { row.swipeLeft() }
         }
+        XCTAssertTrue(row.frame.intersection(app.frame).contains(button.frame),
+                      "Tool must scroll fully into view: \(section).\(tool)")
         XCTAssertTrue(button.isHittable, "Tool must be directly reachable: \(section).\(tool)")
         button.tap()
     }

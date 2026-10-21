@@ -192,4 +192,18 @@ struct PerceptionLifecycleTests {
                                                         timestamp: timestamp, now: 10))
         }
     }
+
+    @Test func guidanceIgnoresHapticLabSamplesAndAcceptsSubsequentLiveObservation() {
+        let system = system()
+        defer { cleanUp(system) }
+        #expect(system.guidance.liveProximityEvent == nil)
+        let simulated = system.proximity.evaluate(nearest: 0.2, confidence: 0.9, region: .center,
+                                                  label: nil, isSimulated: true, inputTimestamp: 0)
+        #expect(simulated.state == .critical)
+        #expect(system.guidance.liveProximityEvent == nil)
+        let live = system.proximity.evaluate(nearest: 0.2, confidence: 0.9, region: .left,
+                                             label: "chair", isSimulated: false, inputTimestamp: 0)
+        #expect(system.guidance.liveProximityEvent?.id == live.id)
+        #expect(system.guidance.liveProximityEvent?.triggeringLabel == "chair")
+    }
 }
