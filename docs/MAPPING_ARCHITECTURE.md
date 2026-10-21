@@ -34,9 +34,10 @@ metres, not GPS or a building-wide geographic frame.
 
 ## Save and restore correctness
 
-- Save requires a recent frame, normal tracking, and extending/mapped world-map
-  quality. Geometry is copied before asynchronous serialization; the current
-  generation is checked again when asynchronous steps finish.
+- Save requires a recent accepted frame, normal tracking, nonempty LiDAR
+  surfaces, and extending/mapped world-map quality. Geometry is copied before
+  asynchronous serialization; the current generation is checked again when
+  asynchronous steps finish.
 - A place is stored under a UUID directory. Each replacement writes an immutable
   revision, then atomically replaces its manifest. Failed validation or writes
   leave the previous committed revision readable. Old revisions are reclaimed
@@ -53,9 +54,11 @@ metres, not GPS or a building-wide geographic frame.
   queues reset options without turning the camera back on. New Map deliberately
   starts a new coordinate space. Library browsing pauses live sensing.
 - Continued saves replace matching mesh identifiers and retain saved chunks
-  outside the current view. Explicit ARKit mesh removals are recorded separately
-  so deleted chunks do not reappear from the saved baseline. Saved and live trails
-  are combined without repeatedly appending the same current-session trail.
+  outside the current view. Explicit ARKit mesh removals during normal tracking
+  are recorded separately; reset/relocalization removals are excluded so they
+  cannot erase the baseline being restored. Recorded deletions do not reappear
+  from the saved baseline. Saved and live trails are combined without repeatedly
+  appending the same current-session trail.
 
 ## Existing functionality reviewed and repaired
 
@@ -77,8 +80,11 @@ configuration. The new coordinate-space transitions exposed existing problems:
   one completed inference snapshot.
 - Low-confidence or missing-confidence depth could produce confident object
   geometry. Only matched medium/high-confidence samples contribute to fusion.
-  Diagnostic depth and point-cloud filters also exclude samples with missing
-  confidence when filtering is enabled; unfiltered inspection remains available.
+- Diagnostic depth heatmaps, aggregate depth statistics and point clouds honor
+  their configured confidence filters. Missing confidence is excluded when a
+  filter is enabled. Raw distance probes (including the center-depth readout),
+  unfiltered depth views and confidence visualizations remain raw diagnostic
+  data; they do not establish confident world geometry or observed free space.
 - Reprocessing unchanged observations refreshed hazard age forever. Hazard
   updates now use capture timestamps and deduplicate each source frame.
 - Missing observations could be described as clear; speech now describes the
