@@ -23,6 +23,7 @@ final class GuidanceEngine {
     }
 
     var verbosity: Verbosity = .normal
+    @ObservationIgnored var onWillStart: (() -> Void)?
     private(set) var running = false
     private(set) var statusText = "Stopped"
 
@@ -65,6 +66,7 @@ final class GuidanceEngine {
 
     func start() {
         guard !running else { return }
+        onWillStart?()
         running = true
         speech.configureAudioIfNeeded()
         ar?.start()

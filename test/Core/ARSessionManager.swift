@@ -58,6 +58,9 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private(set) var isRelocalizing = false
     private(set) var hasLocalizedMap = false
     private(set) var relocalizationTimedOut = false
+    /// Explicit pause survives scene changes and automatic-mapping ticks.
+    private(set) var isUserPaused = false
+    private(set) var mappingRevision = 0
 
     var worldMappingDescription: String {
         switch worldMappingStatus {
@@ -95,6 +98,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// Instrumentation tap (Phase 7 profiler): receives each delivered ARFrame's
     /// capture timestamp. Only a Double is passed — the frame is never retained.
     @ObservationIgnored var frameTimestampTap: ((TimeInterval) -> Void)?
+    /// Synchronous consumers copy what they need; they must never retain a frame.
+    @ObservationIgnored var mappingFrameTap: ((ARFrame, Int) -> Void)?
 
     /// Frame rate of the running configuration's video format, if known.
     var nominalFramesPerSecond: Int? {
@@ -124,6 +129,17 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private(set) var removedMeshAnchorIDs: Set<UUID> = []
     private var meshStats: [UUID: (v: Int, f: Int)] = [:]
 
+    /// Estimate the actual merge rather than taking the larger of two counts:
+    /// a revisited room can contain disjoint saved and currently visible chunks.
+    func mappingUsage(including baseline: SavedMapGeometry?) -> (vertices: Int, faces: Int, anchors: Int) {
+        let unseen = (baseline?.meshes ?? []).filter {
+            meshStats[$0.id] == nil && !removedMeshAnchorIDs.contains($0.id)
+        }
+        return (meshVertexCount + unseen.reduce(0) { $0 + $1.vertexCount },
+                meshFaceCount + unseen.reduce(0) { $0 + $1.faceCount },
+                meshAnchorCount + unseen.count)
+    }
+
     // MARK: - Capability flags (resolved once)
 
     let supportsWorldTracking = ARWorldTrackingConfiguration.isSupported
@@ -140,6 +156,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// Set true the first time the user explicitly starts, so background/foreground
     /// transitions only auto-resume a session the user actually wanted running.
     private var userWantsRunning = false
+    private var foregroundActive = true
     private var pendingInitialWorldMap: ARWorldMap?
     private var pendingRunOptions: ARSession.RunOptions = []
     private var restoringSavedMap = false
@@ -191,17 +208,24 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             errorMessage = "ARWorldTracking is not supported on this device (requires a physical iPhone/iPad with ARKit). LiDAR features require a device with a LiDAR scanner."
             return
         }
-        guard runState != .running else { return }
+        isUserPaused = false
         userWantsRunning = true
+        guard foregroundActive else { return }
+        guard runState != .running else { return }
+        minimumFrameTimestamp = CACurrentMediaTime()
         errorMessage = nil
         runState = .running
+        if isRelocalizing { beginRelocalization(resetTimer: true) }
         runRequestedConfiguration()
     }
 
     func pause() {
+        isUserPaused = true
         userWantsRunning = false
         session.pause()
         runState = .paused
+        relocalizationTimeoutTask?.cancel()
+        relocalizationTimeoutTask = nil
         invalidateLiveMetrics()
     }
 
@@ -219,7 +243,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         clearDerivedState()
         pendingRunOptions = [.resetTracking, .removeExistingAnchors]
         if supportsMesh { pendingRunOptions.insert(.resetSceneReconstruction) }
-        if userWantsRunning {
+        if userWantsRunning && foregroundActive {
             runState = .running
             runRequestedConfiguration()
         } else {
@@ -257,11 +281,12 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         pendingInitialWorldMap = worldMap
         pendingRunOptions = [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction]
         userWantsRunning = true
+        isUserPaused = false
         errorMessage = nil
-        runState = .running
+        runState = foregroundActive ? .running : .interrupted
         finishRelocalization()
         beginRelocalization()
-        runRequestedConfiguration()
+        if foregroundActive { runRequestedConfiguration() }
     }
 
     func cancelRelocalization() { startNewMap() }
@@ -269,17 +294,24 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     // MARK: - Scene phase handling
 
     func handleResignActive() {
-        // ARKit will interrupt automatically; we just reflect state. Don't call
-        // pause() here or we won't be told when the interruption ends.
+        foregroundActive = false
+        relocalizationTimeoutTask?.cancel()
+        relocalizationTimeoutTask = nil
+        relocalizationTimedOut = false
+        // Suspend sensors without changing the user's explicit running intent.
         if runState == .running {
+            session.pause()
             runState = .interrupted
             invalidateLiveMetrics()
         }
     }
 
     func handleBecameActive() {
+        foregroundActive = true
         if userWantsRunning && runState != .running {
+            minimumFrameTimestamp = CACurrentMediaTime()
             runState = .running
+            beginRelocalization(resetTimer: true)
             runRequestedConfiguration()
         }
     }
@@ -300,6 +332,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     nonisolated func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
         MainActor.assumeIsolated {
+            guard self.runState == .running else { return }
             self.updateTracking(camera.trackingState)
         }
     }
@@ -313,7 +346,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
         MainActor.assumeIsolated {
-            if self.userWantsRunning { self.runState = .running }
+            if self.userWantsRunning && self.foregroundActive { self.runState = .running }
         }
     }
 
@@ -382,6 +415,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func applyMesh(updates: [UUID: (v: Int, f: Int)], removed: [UUID]) {
+        mappingRevision &+= 1
         for (id, value) in updates {
             meshStats[id] = value
             removedMeshAnchorIDs.remove(id)
@@ -399,6 +433,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func clearDerivedState() {
+        mappingRevision &+= 1
         meshStats.removeAll()
         removedMeshAnchorIDs.removeAll()
         meshAnchorCount = 0
@@ -437,6 +472,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
         updatePose(frame: frame, time: t)
         maybeComputeValidDepth(frame: frame)
+        if trackingIsNormal && !isRelocalizing { mappingFrameTap?(frame, sessionGeneration) }
     }
 
     /// Updates local camera pose, displacement, and the movement trail.
@@ -559,8 +595,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
     }
 
-    private func beginRelocalization() {
-        guard !isRelocalizing else { return }
+    private func beginRelocalization(resetTimer: Bool = false) {
+        guard !isRelocalizing || resetTimer else { return }
         isRelocalizing = true
         relocalizationTimedOut = false
         let generation = sessionGeneration
@@ -601,7 +637,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private func referenceImageOrientation() -> CGImagePropertyOrientation {
         let orientation = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }?.interfaceOrientation ?? .portrait
+            .first { $0.activationState == .foregroundActive }?.effectiveGeometry.interfaceOrientation ?? .portrait
         // Interface and physical device landscape orientations are opposites.
         switch orientation {
         case .portrait: return .right
@@ -612,7 +648,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
     }
 
-    func captureMappingSnapshot() async throws -> MappingSessionCapture {
+    func captureMappingSnapshot(suspendAfterCapture: Bool = false) async throws -> MappingSessionCapture {
         guard supportsMesh else { throw MappingSessionError.unsupported }
         guard canSaveWorldMap else { throw MappingSessionError.notReady }
         let generation = sessionGeneration
@@ -625,6 +661,14 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
         let (geometry, imageBuffer, orientation) = try copyMappingGeometry()
+        if suspendAfterCapture {
+            // Final segment checkpoint: no surface may arrive after the last
+            // copied mesh and then be discarded when the next origin starts.
+            // Preserve intent so foreground recovery can still resume safely.
+            session.pause()
+            runState = .paused
+            invalidateLiveMetrics()
+        }
         // A restored anchor proves a normal frame belongs to this saved world,
         // not a final frame from the session that ran immediately before loading.
         // Replacing the marker also prevents old map markers from accumulating.
@@ -645,7 +689,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             }
             return (worldData, preview)
         }.value
-        guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
+        guard generation == sessionGeneration,
+              suspendAfterCapture || canSaveWorldMap else { throw MappingSessionError.changedSession }
         return MappingSessionCapture(geometry: geometry, worldMapData: data.0, referenceImageData: data.1)
     }
 
@@ -685,7 +730,7 @@ nonisolated struct MappingSessionCapture: Sendable {
     let referenceImageData: Data?
 }
 
-nonisolated enum MappingSessionError: LocalizedError {
+nonisolated enum MappingSessionError: LocalizedError, Equatable {
     case unsupported, notReady, noSurface, tooLarge, changedSession, invalidArchive
 
     var errorDescription: String? {

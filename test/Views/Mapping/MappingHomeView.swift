@@ -2,7 +2,7 @@ import ARKit
 import SwiftUI
 
 /// Live reconstruction and the local library share one mapping coordinator.
-/// Opening the library pauses sensing; the saved viewer never needs AR input.
+/// Automatic foreground sensing continues while the library is visible.
 struct MappingHomeView: View {
     @Environment(ARSessionManager.self) private var ar
     @Environment(MappingCoordinator.self) private var mapping
@@ -17,7 +17,7 @@ struct MappingHomeView: View {
     @State private var referenceImageData: Data?
 
     private enum MappingSection: String, CaseIterable, Identifiable {
-        case live = "Live Map", library = "Saved Places"
+        case live = "Live Map", text = "Text & Signs", library = "Saved Places"
         var id: String { rawValue }
     }
 
@@ -47,22 +47,15 @@ struct MappingHomeView: View {
 
                 switch section {
                 case .live: liveMap
+                case .text: TextRecognitionPanel(controller: mapping.textRecognition)
                 case .library: library
                 }
             }
             .background(Theme.background)
-            .navigationTitle(section == .live ? "Map Your Space" : "Saved Places")
+            .navigationTitle(section == .live ? "Map Your Space" : section.rawValue)
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 await mapping.refreshLibrary()
-                if section == .live, ar.supportsMesh, ar.runState == .idle { ar.start() }
-            }
-            .onChange(of: section) { _, next in
-                if next == .library {
-                    ar.pause()
-                } else if ar.supportsMesh, ar.runState != .running {
-                    ar.start()
-                }
             }
             .alert("Name this place", isPresented: $showSaveName) {
                 TextField("Place name", text: $mapName)
@@ -70,7 +63,7 @@ struct MappingHomeView: View {
                     .disabled(mapName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Saves the 3D surfaces, camera path, reference photo, and localization data on this device.")
+                Text("Saves colored surfaces, photos, visited paths, destination labels, text marks, and localization data on this device.")
             }
             .confirmationDialog("Start a new map?", isPresented: $showNewMap, titleVisibility: .visible) {
                 Button("Start New Map", role: .destructive) {
@@ -122,7 +115,8 @@ struct MappingHomeView: View {
         VStack(spacing: 10) {
             if ar.supportsWorldTracking && ar.supportsMesh {
                 MappingLiveSurfaceView()
-                    .frame(minHeight: 220)
+                    .overlay { LiveTextMarkers(controller: mapping.textRecognition) }
+                    .frame(height: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
                     .overlay(alignment: .topLeading) {
                         Label(ar.runState == .running ? "LIVE RECONSTRUCTION" : ar.runState.rawValue.uppercased(),
@@ -141,17 +135,17 @@ struct MappingHomeView: View {
                 VStack(spacing: 10) {
                     mappingStatus
                     if ar.isRelocalizing { relocalizationHelp }
+                    NavigationPanel(controller: mapping.navigation)
                     if let message = mapping.statusMessage {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     controls
-                    Text("Move slowly and scan textured surfaces from several angles. Camera and motion tracking locate the phone; LiDAR reconstructs surfaces. Maps use local coordinates in metres.")
+                    Text("Mapping, color capture, and local OCR run automatically while the app is active. Walk connected paths and label your destinations to enable return directions. Keep the phone facing the way you are traveling.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxHeight: 260)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -160,8 +154,13 @@ struct MappingHomeView: View {
     private var mappingStatus: some View {
         Panel {
             VStack(alignment: .leading, spacing: 8) {
-                Text(mapping.activeMap?.name ?? "New place")
+                Text(mapping.activeMap?.name ?? "Automatically mapping this place")
                     .font(.headline)
+                Text(mapping.automaticState).font(.footnote).foregroundStyle(.secondary)
+                if let saved = mapping.lastSavedAt {
+                    Text("Last saved \(saved.formatted(date: .omitted, time: .standard))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if mapping.canDisplayRestoredGeometry {
                     Label("Saved place recognized", systemImage: "checkmark.seal.fill")
                         .font(.caption).foregroundStyle(Theme.good)
@@ -172,12 +171,12 @@ struct MappingHomeView: View {
                     Stat(label: "Map quality", value: ar.worldMappingDescription)
                     Stat(label: "Surfaces", value: ar.meshFaceCount.formatted())
                 }
-                Label(ar.canSaveWorldMap ? "Ready to save" : "Keep scanning until tracking and map quality are ready",
+                Label(ar.canSaveWorldMap ? "Automatic saving is ready" : "Scanning until tracking and map quality are ready",
                       systemImage: ar.canSaveWorldMap ? "checkmark.circle.fill" : "viewfinder")
                     .font(.caption)
                     .foregroundStyle(ar.canSaveWorldMap ? Theme.good : Theme.warn)
                 if ar.meshVertexCount >= MapLimits.maxVertices * 4 / 5 || ar.meshFaceCount >= MapLimits.maxTriangles * 4 / 5 {
-                    Text("This scan is approaching the room-map size limit. Save now, then start a separate map for the next area.")
+                    Text("The current segment is getting large. Automatic mapping will save it before continuing in a new segment.")
                         .font(.caption).foregroundStyle(Theme.warn)
                 }
                 if let error = ar.errorMessage {
@@ -217,7 +216,7 @@ struct MappingHomeView: View {
                     showSaveName = true
                 }
             } label: {
-                Label(mapping.activeMap == nil ? "Save Place" : "Save Changes", systemImage: "square.and.arrow.down")
+                Label(mapping.activeMap == nil ? "Name & Save Now" : "Save Now", systemImage: "square.and.arrow.down")
                     .font(.headline)
                     .frame(maxWidth: .infinity, minHeight: 34)
             }
@@ -226,9 +225,9 @@ struct MappingHomeView: View {
 
             HStack {
                 Button {
-                    if ar.runState == .running { ar.pause() } else { ar.start() }
+                    if ar.runState == .running { mapping.pauseAutomaticMapping() } else { mapping.resumeAutomaticMapping() }
                 } label: {
-                    Label(ar.runState == .running ? "Pause" : "Start",
+                    Label(ar.runState == .running ? "Pause Mapping" : "Resume Mapping",
                           systemImage: ar.runState == .running ? "pause.fill" : "play.fill")
                         .frame(maxWidth: .infinity)
                 }
@@ -247,7 +246,7 @@ struct MappingHomeView: View {
         Group {
             if mapping.maps.isEmpty {
                 ContentUnavailableView("Your places will appear here", systemImage: "map",
-                    description: Text("Scan a space in Live Map, then save it. Open a saved place to explore its 3D surfaces or revisit it in person."))
+                    description: Text("Scan a space while the app is open. Usable maps save automatically. Open a saved place to explore its colors, photos, text marks, or revisit it in person."))
             } else {
                 List(mapping.maps) { place in
                     HStack {
@@ -315,8 +314,16 @@ private struct SavedPlaceDetailView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Explore this saved scan from any location. To continue scanning, return to the original place and use Revisit.")
+                        Text("Explore this saved scan from any location. To navigate to its labeled destinations, return to this place and use Revisit to align the map.")
                             .font(.footnote)
+                        if let graph = archive.geometry.navigation {
+                            Text("Saved destinations: \(graph.labels.map(\.name).joined(separator: ", "))")
+                                .font(.footnote)
+                        }
+                        DisclosureGroup("Text marks and directional signs") {
+                            SavedTextObservationsView(annotations: archive.geometry.textAnnotations,
+                                                      signage: archive.geometry.directionalSignage)
+                        }
                         if let data = archive.referenceImageData, let image = UIImage(data: data) {
                             HStack(spacing: 12) {
                                 Image(uiImage: image).resizable().scaledToFit().frame(width: 120, height: 100)

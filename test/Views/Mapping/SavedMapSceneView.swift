@@ -11,6 +11,7 @@ struct SavedMapSceneView: View {
     let geometry: SavedMapGeometry
     @State private var holder = SavedMapSceneHolder()
     @State private var wireframe = false
+    @State private var showsPhotos = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -34,13 +35,18 @@ struct SavedMapSceneView: View {
                 HStack {
                     Toggle("Wireframe", isOn: $wireframe)
                         .toggleStyle(.button)
+                    if !geometry.keyframes.isEmpty {
+                        Button { showsPhotos = true } label: {
+                            Label("Photos (\(geometry.keyframes.count))", systemImage: "photo.on.rectangle")
+                        }
+                    }
                     Spacer()
                     Button { holder.fitCamera() } label: {
                         Label("Fit map", systemImage: "arrow.up.left.and.arrow.down.right")
                     }
                 }
                 .font(.footnote)
-                Text("Yellow line: captured camera trail. Surfaces are a saved snapshot.")
+                Text("Real camera colours · Grey: unseen colour · Yellow: walked trail · Orange: text · Green: destinations")
                     .font(.caption2).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
@@ -52,6 +58,7 @@ struct SavedMapSceneView: View {
         .onChange(of: geometry) { _, value in holder.load(value) }
         .onChange(of: wireframe) { _, value in holder.setWireframe(value) }
         .onDisappear { holder.cancel() }
+        .sheet(isPresented: $showsPhotos) { SavedMapPhotoGallery(keyframes: geometry.keyframes) }
     }
 }
 
@@ -67,6 +74,7 @@ private final class SavedMapSceneHolder {
     let view = SCNView()
     private let meshRoot = SCNNode()
     private let trailNode = SCNNode()
+    private let labelRoot = SCNNode()
     private let cameraNode = SCNNode()
     private var center = SIMD3<Float>.zero
     private var radius: Float = 2
@@ -80,6 +88,7 @@ private final class SavedMapSceneHolder {
         scene.background.contents = UIColor(Theme.background)
         scene.rootNode.addChildNode(meshRoot)
         scene.rootNode.addChildNode(trailNode)
+        scene.rootNode.addChildNode(labelRoot)
         scene.rootNode.addChildNode(PointCloudSceneHolder.makeAxes(length: 0.5))
         cameraNode.camera = SCNCamera()
         cameraNode.camera?.fieldOfView = 55
@@ -174,11 +183,17 @@ private final class SavedMapSceneHolder {
                                                 bytesPerComponent: 4, dataOffset: 0, dataStride: 12)
             let element = SCNGeometryElement(data: mesh.indices, primitiveType: .triangles,
                                              primitiveCount: mesh.faceCount, bytesPerIndex: 4)
-            let geometry = SCNGeometry(sources: [vertexSource, normalSource], elements: [element])
+            var sources = [vertexSource, normalSource]
+            if let colors = mesh.colors {
+                sources.append(SCNGeometrySource(data: colors, semantic: .color,
+                    vectorCount: mesh.vertexCount, usesFloatComponents: true, componentsPerVector: 4,
+                    bytesPerComponent: 4, dataOffset: 0, dataStride: 16))
+            }
+            let geometry = SCNGeometry(sources: sources, elements: [element])
             let material = SCNMaterial()
-            material.diffuse.contents = UIColor(Theme.accent)
+            material.diffuse.contents = mesh.colors == nil ? UIColor(white: 0.46, alpha: 1) : UIColor.white
             material.isDoubleSided = true
-            material.lightingModel = .lambert
+            material.lightingModel = mesh.colors == nil ? .lambert : .constant
             material.fillMode = wireframe ? .lines : .fill
             geometry.materials = [material]
             meshRoot.addChildNode(SCNNode(geometry: geometry))
@@ -199,6 +214,27 @@ private final class SavedMapSceneHolder {
         } else {
             trailNode.geometry = nil
         }
+        labelRoot.childNodes.forEach { $0.removeFromParentNode() }
+        for label in prepared.labels {
+            let color = label.isDestination ? UIColor.systemGreen : UIColor.systemOrange
+            let marker = SCNSphere(radius: label.isDestination ? 0.055 : 0.025)
+            marker.firstMaterial?.diffuse.contents = color
+            marker.firstMaterial?.lightingModel = .constant
+            let node = SCNNode(geometry: marker)
+            node.simdPosition = label.position
+            let text = SCNText(string: label.title, extrusionDepth: 0)
+            text.font = UIFont.systemFont(ofSize: 10, weight: .semibold)
+            text.flatness = 0.5
+            text.firstMaterial?.diffuse.contents = color
+            text.firstMaterial?.isDoubleSided = true
+            text.firstMaterial?.lightingModel = .constant
+            let textNode = SCNNode(geometry: text)
+            textNode.simdScale = SIMD3(repeating: 0.006)
+            textNode.position = SCNVector3(0.04, 0.07, 0)
+            textNode.constraints = [SCNBillboardConstraint()]
+            node.addChildNode(textNode)
+            labelRoot.addChildNode(node)
+        }
         center = prepared.center
         radius = prepared.radius
         fitCamera()
@@ -212,6 +248,7 @@ private nonisolated struct SavedMapScenePreparation: Sendable {
         var vertices: Data
         var normals: Data
         var indices: Data
+        var colors: Data?
         var vertexCount: Int
         var faceCount: Int
     }
@@ -221,6 +258,12 @@ private nonisolated struct SavedMapScenePreparation: Sendable {
     var trailVertices: Data
     var trailIndices: Data
     var trailCount: Int
+    nonisolated struct Label: Sendable {
+        var title: String
+        var position: SIMD3<Float>
+        var isDestination: Bool
+    }
+    var labels: [Label]
 
     static func prepare(_ geometry: SavedMapGeometry) throws -> Self {
         try geometry.validate()
@@ -266,6 +309,7 @@ private nonisolated struct SavedMapScenePreparation: Sendable {
             meshes.append(Mesh(vertices: mesh.vertices.withUnsafeBytes { Data($0) },
                                normals: normals.withUnsafeBytes { Data($0) },
                                indices: mesh.triangleIndices.withUnsafeBytes { Data($0) },
+                               colors: MapColorRendering.displayColors(for: mesh)?.withUnsafeBytes { Data($0) },
                                vertexCount: mesh.vertexCount, faceCount: mesh.faceCount))
         }
         let center = geometry.vertexCount == 0 ? SIMD3<Float>.zero : (minimum + maximum) / 2
@@ -273,9 +317,60 @@ private nonisolated struct SavedMapScenePreparation: Sendable {
         let trailVertices = geometry.trail.flatMap { [$0.x, $0.y, $0.z] }
         let trailIndices: [UInt32] = geometry.trail.count > 1
             ? (1..<geometry.trail.count).flatMap { [UInt32($0 - 1), UInt32($0)] } : []
+        var labels = geometry.textAnnotations.filter { $0.worldPosition != nil }
+            .sorted { $0.confidence > $1.confidence }.prefix(80).compactMap { annotation -> Label? in
+                guard let p = annotation.worldPosition else { return nil }
+                return Label(title: String(annotation.text.prefix(60)), position: SIMD3(p.x, p.y, p.z), isDestination: false)
+            }
+        if let graph = geometry.navigation {
+            let nodes = Dictionary(uniqueKeysWithValues: graph.nodes.map { ($0.id, $0.position) })
+            for label in graph.labels.prefix(40) {
+                guard let p = nodes[label.nodeID] else { continue }
+                labels.append(Label(title: label.name, position: SIMD3(p.x, p.y, p.z), isDestination: true))
+            }
+        }
         return Self(meshes: meshes, center: center, radius: radius,
                     trailVertices: trailVertices.withUnsafeBytes { Data($0) },
                     trailIndices: trailIndices.withUnsafeBytes { Data($0) },
-                    trailCount: geometry.trail.count)
+                    trailCount: geometry.trail.count, labels: labels)
+    }
+}
+
+/// Preserve sampled linear RGB. Unknown vertices are an explicit neutral grey,
+/// never a fabricated colour or a transparent hole in the saved surface.
+nonisolated enum MapColorRendering {
+    static func displayColors(for mesh: MapMeshSnapshot) -> [Float]? {
+        guard var colors = mesh.vertexColors, colors.count == mesh.vertexCount * 4 else { return nil }
+        for index in 0..<mesh.vertexCount where colors[index * 4 + 3] == 0 {
+            colors[index * 4] = 0.18; colors[index * 4 + 1] = 0.18
+            colors[index * 4 + 2] = 0.18; colors[index * 4 + 3] = 1
+        }
+        return colors
+    }
+}
+
+struct SavedMapPhotoGallery: View {
+    let keyframes: [SavedMapKeyframe]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(spacing: 20) {
+                    ForEach(keyframes) { frame in
+                        VStack(alignment: .leading, spacing: 5) {
+                            if let image = UIImage(data: frame.jpegData) {
+                                Image(uiImage: image).resizable().scaledToFit()
+                                    .accessibilityLabel("Camera view captured at \(frame.capturedAt.formatted())")
+                            }
+                            Text(frame.capturedAt, format: .dateTime.month().day().hour().minute().second())
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }.padding()
+            }
+            .navigationTitle("Captured photos")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        }
     }
 }
