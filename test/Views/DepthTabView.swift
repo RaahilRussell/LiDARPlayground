@@ -24,6 +24,7 @@ struct DepthTabView: View {
     @State private var showConfidence = false
     @State private var filterLowConfidence = false
     @State private var rangeMax: Float = 5.0
+    @State private var processingGate = SensorFrameProcessingGate()
 
     // Measurement probe (normalized buffer coordinates, origin top-left landscape).
     @State private var probePoint = CGPoint(x: 0.5, y: 0.5)
@@ -224,41 +225,64 @@ struct DepthTabView: View {
 
     // MARK: - Processing loop
 
+    private struct ProcessingOptions: Equatable {
+        let showConfidence: Bool
+        let filterLowConfidence: Bool
+        let rangeMax: Float
+        let source: DepthSource
+    }
+
+    private var processingOptions: ProcessingOptions {
+        ProcessingOptions(showConfidence: showConfidence,
+                          filterLowConfidence: filterLowConfidence,
+                          rangeMax: rangeMax, source: ar.depthSource)
+    }
+
+    private struct ProcessingInput {
+        let generation: Int
+        let timestamp: TimeInterval
+        let depth: CVPixelBuffer
+        let confidence: CVPixelBuffer?
+    }
+
+    /// Copy only required buffers so the full ARFrame is released before await.
+    private func processingInput(source: DepthSource) -> ProcessingInput? {
+        guard let frame = ar.session.currentFrame, ar.isCurrentFrame(frame),
+              let depth = selectedDepth(frame, source: source) else { return nil }
+        return ProcessingInput(generation: ar.sessionGeneration, timestamp: frame.timestamp,
+                               depth: depth.depthMap, confidence: depth.confidenceMap)
+    }
+
     private func runProcessingLoop() async {
         clearReadings()
         while !Task.isCancelled {
-            if let frame = ar.session.currentFrame, ar.isCurrentFrame(frame),
-               let depth = selectedDepth(frame) {
-                let generation = ar.sessionGeneration
-                let timestamp = frame.timestamp
-                let depthMap = depth.depthMap
-                let confMap = depth.confidenceMap
-                let mode: HeatmapMode = showConfidence ? .confidence : .depth(range: 0...rangeMax)
-                let minConf: ARConfidenceLevel? = filterLowConfidence ? .medium : nil
-
-                let result = await Self.process(depth: depthMap, confidence: confMap,
-                                                mode: mode, minConf: minConf)
-                guard !Task.isCancelled else { return }
-                guard generation == ar.sessionGeneration,
-                      ar.isCurrentObservation(timestamp: timestamp) else {
-                    clearReadings()
-                    continue
-                }
-                heatmap = result.image
-                stats = result.stats
-
-                if let p = probeMeters(depth: depthMap, at: probePoint) {
-                    probeMeters = p
-                } else {
-                    probeMeters = nil
-                }
-                probeConfidence = confMap.flatMap {
-                    DepthProcessing.sampleConfidence($0, normalizedPoint: probePoint)
-                }
-            } else {
-                clearReadings()
-            }
+            await processNextFrame()
             try? await Task.sleep(for: .milliseconds(80))
+        }
+    }
+
+    private func processNextFrame() async {
+        // A canceled predecessor still owns this gate until its worker finishes.
+        guard let token = processingGate.begin() else { return }
+        defer { processingGate.finish(token) }
+        let options = processingOptions
+        guard let input = processingInput(source: options.source) else {
+            clearReadings(); return
+        }
+        let mode: HeatmapMode = options.showConfidence ? .confidence : .depth(range: 0...options.rangeMax)
+        let minConf: ARConfidenceLevel? = options.filterLowConfidence ? .medium : nil
+        let result = await Self.process(depth: input.depth, confidence: input.confidence,
+                                        mode: mode, minConf: minConf)
+        guard !Task.isCancelled, options == processingOptions else { return }
+        guard input.generation == ar.sessionGeneration,
+              ar.isCurrentObservation(timestamp: input.timestamp) else {
+            clearReadings(); return
+        }
+        heatmap = result.image
+        stats = result.stats
+        probeMeters = probeMeters(depth: input.depth, at: probePoint)
+        probeConfidence = input.confidence.flatMap {
+            DepthProcessing.sampleConfidence($0, normalizedPoint: probePoint)
         }
     }
 
@@ -270,8 +294,8 @@ struct DepthTabView: View {
         DepthProcessing.sampleDistance(depth: depth, normalizedPoint: p)
     }
 
-    private func selectedDepth(_ frame: ARFrame) -> ARDepthData? {
-        switch ar.depthSource {
+    private func selectedDepth(_ frame: ARFrame, source: DepthSource) -> ARDepthData? {
+        switch source {
         case .smoothed: return frame.smoothedSceneDepth ?? frame.sceneDepth
         case .raw: return frame.sceneDepth ?? frame.smoothedSceneDepth
         }

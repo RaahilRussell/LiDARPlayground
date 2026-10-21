@@ -30,6 +30,9 @@ this later repair.
 - [ ] Rotate between portrait and both landscape orientations in Live AI and
       Fused. Boxes and masks must share the displayed camera crop. Confirm the
       LiDAR distance still corresponds to the same detected object.
+- [ ] Rapidly change Depth range/confidence/source and Point Cloud density/space
+      while mapping and Assist are active. Verify preview work stays single-flight,
+      stale options never replace the current display, and camera frames continue.
 
 ## Automatic mapping, color, navigation, and OCR follow-up
 

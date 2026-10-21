@@ -9,7 +9,7 @@ tests did not exercise those user flows.
 
 - Camera, LiDAR, AI Vision, Maps, and Assist are direct app destinations. Camera
   is the initial view. Every existing sensor and AI tool remains reachable.
-- Map-saving failures stop automatic save retries and show a retry action; they
+- Storage-write failures pause automatic saving and show a retry action; they
   must not pause the shared camera, raw depth, or computer vision. A failed final
   segment checkpoint retains its data while live reconstruction recovers.
 - Changing screens and handing spoken guidance to a route must not silently
@@ -24,6 +24,9 @@ tests did not exercise those user flows.
 - Depth display and its touch probe share the same aspect-fit rectangle. Depth,
   point-cloud, and mesh displays clear stale readings on pause/reset and discard
   late background results from a previous session.
+- Depth and point-cloud previews limit processing to one worker per view across
+  control changes and task restarts, so rapid slider changes cannot accumulate
+  detached jobs holding camera buffers. Completed work must match current options.
 - The Data screen clears old live readings and distinguishes recorded history
   from the current pose. Sensor recordings use the same fresh-frame gate and
   stop after an explicit pause, even when the camera resumes before the next poll.
@@ -58,6 +61,9 @@ requiring the user to restart Assist.
 - The UI exposes recovery status and Retry Sensing, and explains which source a
   Save action will use. World-map requests have a timeout so an unresponsive
   camera cannot leave map controls busy indefinitely.
+- Temporary capture timeouts retry with backoff. Storage retries refresh cached
+  filesystem metadata, and saved obstacle-height evidence survives a failed
+  initial write. Archived hazards remain separate from fresh obstacle warnings.
 
 ## Verification
 

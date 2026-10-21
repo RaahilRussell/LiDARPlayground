@@ -18,6 +18,7 @@ struct PointCloudTabView: View {
     @State private var density: Double = 2      // stride; higher = fewer points
     @State private var pointCount = 0
     @State private var highConfidenceOnly = true
+    @State private var processingGate = SensorFrameProcessingGate()
 
     private let maxPoints = 60_000
 
@@ -66,42 +67,58 @@ struct PointCloudTabView: View {
         }
     }
 
+    private struct ProcessingOptions: Equatable {
+        let worldSpace: Bool
+        let stride: Int
+        let highConfidenceOnly: Bool
+    }
+
+    private var processingOptions: ProcessingOptions {
+        ProcessingOptions(worldSpace: worldSpace, stride: Int(density),
+                          highConfidenceOnly: highConfidenceOnly)
+    }
+
+    /// Keep ARFrame lifetime within this synchronous copy, not the worker await.
+    private func processingInput(options: ProcessingOptions)
+    -> (generation: Int, timestamp: TimeInterval, input: PointCloudInput)? {
+        guard let frame = ar.session.currentFrame,
+              options.worldSpace ? ar.isCurrentWorldFrame(frame) : ar.isCurrentFrame(frame),
+              let depth = frame.smoothedSceneDepth ?? frame.sceneDepth else { return nil }
+        let input = PointCloudInput(
+            depth: depth.depthMap, confidence: depth.confidenceMap,
+            capturedImage: frame.capturedImage, intrinsics: frame.camera.intrinsics,
+            imageResolution: frame.camera.imageResolution, cameraTransform: frame.camera.transform,
+            worldSpace: options.worldSpace, stride: options.stride, maxPoints: maxPoints,
+            minConfidence: options.highConfidenceOnly ? ARConfidenceLevel.high.rawValue : -1)
+        return (ar.sessionGeneration, frame.timestamp, input)
+    }
+
     private func loop() async {
         holder.update(PointCloud()); pointCount = 0
         while !Task.isCancelled {
-            if let frame = ar.session.currentFrame,
-               worldSpace ? ar.isCurrentWorldFrame(frame) : ar.isCurrentFrame(frame),
-               let depth = frame.smoothedSceneDepth ?? frame.sceneDepth {
-                let generation = ar.sessionGeneration
-                let timestamp = frame.timestamp
-                let input = PointCloudInput(
-                    depth: depth.depthMap,
-                    confidence: depth.confidenceMap,
-                    capturedImage: frame.capturedImage,
-                    intrinsics: frame.camera.intrinsics,
-                    imageResolution: frame.camera.imageResolution,
-                    cameraTransform: frame.camera.transform,
-                    worldSpace: worldSpace,
-                    stride: Int(density),
-                    maxPoints: maxPoints,
-                    minConfidence: highConfidenceOnly ? ARConfidenceLevel.high.rawValue : -1)
-
-                let cloud = await Task.detached(priority: .userInitiated) {
-                    PointCloudGenerator.generate(input)
-                }.value
-                guard !Task.isCancelled else { return }
-                guard generation == ar.sessionGeneration, ar.isCurrentObservation(timestamp: timestamp),
-                      !worldSpace || (ar.trackingIsNormal && !ar.isRelocalizing) else {
-                    holder.update(PointCloud()); pointCount = 0
-                    continue
-                }
-                holder.update(cloud)
-                pointCount = cloud.count
-            } else {
-                holder.update(PointCloud()); pointCount = 0
-            }
+            await processNextFrame()
             try? await Task.sleep(for: .milliseconds(150))
         }
+    }
+
+    private func processNextFrame() async {
+        guard let token = processingGate.begin() else { return }
+        defer { processingGate.finish(token) }
+        let options = processingOptions
+        guard let captured = processingInput(options: options) else {
+            holder.update(PointCloud()); pointCount = 0; return
+        }
+        let cloud = await Task.detached(priority: .userInitiated) {
+            PointCloudGenerator.generate(captured.input)
+        }.value
+        guard !Task.isCancelled, options == processingOptions else { return }
+        guard captured.generation == ar.sessionGeneration,
+              ar.isCurrentObservation(timestamp: captured.timestamp),
+              !options.worldSpace || (ar.trackingIsNormal && !ar.isRelocalizing) else {
+            holder.update(PointCloud()); pointCount = 0; return
+        }
+        holder.update(cloud)
+        pointCount = cloud.count
     }
 
     private var unsupported: some View {
