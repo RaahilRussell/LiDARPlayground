@@ -146,10 +146,14 @@ can reduce coverage or create false positives.
 
 ## Verification boundary
 
-Windows syntax parsing and source review are available locally. The new
-automatic/color/navigation/OCR changes require their own unsigned iPhone build
-and simulator test result; the earlier 77-test result covers the prior mapping
-revision. Current evidence and physical acceptance checks are recorded in
+Windows syntax parsing and source review were supplemented by Apple SDK
+compilation and simulator tests in GitHub macOS CI. Follow-up code head
+`9b0c1a235e523d324e705ca558880e7b8822c46d` passed the unsigned iPhone build and
+**123 tests in 14 suites in 6.388 seconds** in
+[run 39555636456](https://github.com/RaahilRussell/LiDARPlayground/actions/runs/39555636456).
+This is the verified code for [PR #3](https://github.com/RaahilRussell/LiDARPlayground/pull/3);
+the earlier 77-test result covers the prior saved-place implementation. Remaining
+compiler warnings, historical evidence, and physical acceptance checks are recorded in
 [DEVICE_VALIDATION.md](DEVICE_VALIDATION.md). No physical iPhone measurements of
 tracking drift, relocalization, color alignment, OCR quality, route safety,
 battery, or sustained thermal behavior have been performed in this workspace.
