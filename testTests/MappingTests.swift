@@ -103,6 +103,23 @@ struct MappingTests {
         }
     }
 
+    @Test func explicitRemovalDropsArchivedChunkButNotUnseenSurfacesOrReaddedChunks() throws {
+        let removed = archive().geometry.meshes[0]
+        let unseen = archive().geometry.meshes[0]
+        let baseline = SavedMapGeometry(meshes: [removed, unseen], trail: [])
+        let merged = try MappingCoordinator.merging(baseline: baseline,
+            current: SavedMapGeometry(meshes: [], trail: []), excluding: [removed.id])
+        #expect(merged.meshes == [unseen])
+
+        var readded = removed
+        readded.vertices[0] = 0.5
+        let restored = try MappingCoordinator.merging(baseline: baseline,
+            current: SavedMapGeometry(meshes: [readded], trail: []), excluding: [removed.id])
+        #expect(restored.meshes.count == 2)
+        #expect(restored.meshes.contains(readded))
+        #expect(restored.meshes.contains(unseen))
+    }
+
     @Test func saveReopenRenameAndDeletePreserveGeometry() async throws {
         let root = temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

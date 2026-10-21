@@ -103,7 +103,11 @@ final class SpatialFusionEngine {
 
         var results: [ObjectObservation] = []
         for obj in objects {
-            let box = obj.boxNormalized
+            let requestedBox = obj.boxNormalized
+            guard requestedBox.minX.isFinite, requestedBox.minY.isFinite,
+                  requestedBox.maxX.isFinite, requestedBox.maxY.isFinite else { continue }
+            let box = requestedBox.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            guard !box.isNull, !box.isEmpty else { continue }
             // Portrait (.right) box → depth-buffer normalized rect (90° CW mapping):
             // bx = dy, by = 1 - dx  ⇒  bx∈[box.minY,box.maxY], by∈[1-box.maxX,1-box.minX]
             var bxMin = Float(box.minY), bxMax = Float(box.maxY)

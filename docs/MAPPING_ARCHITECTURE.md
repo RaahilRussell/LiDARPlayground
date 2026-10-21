@@ -45,15 +45,17 @@ metres, not GPS or a building-wide geographic frame.
   identifiers are validated. Corrupt committed manifests remain visible for
   diagnosis/deletion. Geometry uses explicit little-endian binary blocks.
 - Revisit installs `initialWorldMap`, resets tracking and scene reconstruction,
-  and waits for a new normal-tracking frame. Saved geometry is hidden until the
-  restored coordinate space is established. A 30-second notice offers recovery;
+  and waits for a new normal-tracking frame containing that archive's unique
+  origin anchor. Saved geometry is hidden until the restored coordinate space
+  is established. A 30-second notice offers recovery;
   it does not pretend the place has been recognized.
 - Pause and foreground resume preserve a pending restore. Reset while paused
   queues reset options without turning the camera back on. New Map deliberately
   starts a new coordinate space. Library browsing pauses live sensing.
 - Continued saves replace matching mesh identifiers and retain saved chunks
-  outside the current view. Saved and live trails are combined without repeatedly
-  appending the same current-session trail.
+  outside the current view. Explicit ARKit mesh removals are recorded separately
+  so deleted chunks do not reappear from the saved baseline. Saved and live trails
+  are combined without repeatedly appending the same current-session trail.
 
 ## Existing functionality reviewed and repaired
 
@@ -63,6 +65,11 @@ configuration. The new coordinate-space transitions exposed existing problems:
 
 - Sensor snapshots could remain available while paused or interrupted. Providers
   now reject stopped, stale, relocalizing and previous-generation input.
+- Sensor recordings could mix poses across a reset, repeat a paused frame, or
+  retain depth from an earlier capture when new depth was missing. Recording now
+  clears every payload, requires fresh normal-tracking frames from one generation,
+  deduplicates timestamps, and discards incomplete data after interruption or
+  cancellation. These session transitions require the on-device checks.
 - World-space detections and clusters could survive an origin reset. Generation
   guards clear these caches and reject detached work from an older scan.
 - Object boxes could be fused with a newer frame's depth/pose. Fusion now uses
@@ -70,13 +77,21 @@ configuration. The new coordinate-space transitions exposed existing problems:
   one completed inference snapshot.
 - Low-confidence or missing-confidence depth could produce confident object
   geometry. Only matched medium/high-confidence samples contribute to fusion.
+  Diagnostic depth and point-cloud filters also exclude samples with missing
+  confidence when filtering is enabled; unfiltered inspection remains available.
 - Reprocessing unchanged observations refreshed hazard age forever. Hazard
   updates now use capture timestamps and deduplicate each source frame.
 - Missing observations could be described as clear; speech now describes the
   lack of confirmation. Forward clear feedback requires forward observed-free
   depth. Starting guidance preserves the user's haptic preference.
+- Live proximity thresholds now use the actual nearest depth, including samples
+  labelled observed-free by the occupancy layer. A 1.5-metre obstacle therefore
+  still triggers a configured 2-metre caution threshold. Demo and live selection
+  share the same policy, while unknown forward space remains uncertain.
 - The project still advertised visionOS targets despite using iOS-only world
   tracking. Those destinations were removed; deployment and signing were kept.
+- The live mesh renderer omitted ARKit's normals and copied unused index-buffer
+  capacity. It now includes normals for lighting and copies only used indices.
 
 ## Performance and limits
 
@@ -94,6 +109,9 @@ to RealityKit can preserve the map store and coordinator boundaries. The saved
 geometry is untextured; the reference image is a localization aid, not a texture
 atlas. Historical surfaces may represent objects that have moved. They are not
 fed into the live hazard system as current obstacles or certified free space.
+If ARKit reconstructs the same surface with a new anchor identifier on a later
+visit, historical and new chunks can overlap. This version does not globally
+remesh or optimize those chunks; the archive caps still apply.
 
 ARKit relocalization depends on visual overlap, lighting and scene stability.
 There is no guarantee of recognition, globally consistent multi-room mapping,

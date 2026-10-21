@@ -77,7 +77,8 @@ final class MappingCoordinator {
                 // Only prepend the path from before the current revisit.
                 SavedMapGeometry(meshes: $0.meshes, trail: savedTrailPrefix)
             } : nil
-            let geometry = try Self.merging(baseline: baseline, current: capture.geometry)
+            let geometry = try Self.merging(baseline: baseline, current: capture.geometry,
+                                            excluding: manager.removedMeshAnchorIDs)
             let previous = continuesSavedMap ? activeMap : nil
             let now = Date()
             let metadata = SavedMapMetadata(
@@ -139,7 +140,7 @@ final class MappingCoordinator {
             savedTrailPrefix = archive.geometry.trail
             storedGeometry = archive.geometry
             storedReferenceImageData = archive.referenceImageData
-            statusMessage = "Recognizing \(archive.metadata.name). Return to the saved view before extending this map."
+            statusMessage = "Loaded \(archive.metadata.name). Match the saved view to align its surfaces, then continue scanning."
         } catch { report(error, operation: operation) }
     }
 
@@ -217,12 +218,15 @@ final class MappingCoordinator {
         if isCurrent(operation) { errorMessage = error.localizedDescription }
     }
 
-    nonisolated static func merging(baseline: SavedMapGeometry?, current: SavedMapGeometry) throws -> SavedMapGeometry {
+    nonisolated static func merging(baseline: SavedMapGeometry?, current: SavedMapGeometry,
+                                    excluding removedIDs: Set<UUID> = []) throws -> SavedMapGeometry {
         try baseline?.validate()
         try current.validate()
         // Restored chunks remain available when ARKit is currently looking at
         // only one portion of the place. Updated IDs replace their saved chunk.
-        var byID = Dictionary(uniqueKeysWithValues: (baseline?.meshes ?? []).map { ($0.id, $0) })
+        let retained = (baseline?.meshes ?? []).filter { !removedIDs.contains($0.id) }
+        var byID = Dictionary(uniqueKeysWithValues: retained.map { ($0.id, $0) })
+        // A newly delivered live chunk with the same ID supersedes a tombstone.
         for mesh in current.meshes { byID[mesh.id] = mesh }
         var trail = baseline?.trail ?? []
         trail.append(contentsOf: current.trail)

@@ -72,6 +72,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     var canSaveWorldMap: Bool {
         guard runState == .running, trackingIsNormal, !isRelocalizing, meshFaceCount > 0,
               let frame = session.currentFrame,
+              frame.timestamp == lastFrameTimestamp,
               frame.timestamp >= minimumFrameTimestamp,
               CACurrentMediaTime() - frame.timestamp < 0.5 else { return false }
         return worldMappingStatus == .extending || worldMappingStatus == .mapped
@@ -118,6 +119,9 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private(set) var meshAnchorCount: Int = 0
     private(set) var meshVertexCount: Int = 0
     private(set) var meshFaceCount: Int = 0
+    /// Explicit reconstruction deletions, distinct from surfaces merely outside
+    /// the current camera view. Saved baseline chunks honor these tombstones.
+    private(set) var removedMeshAnchorIDs: Set<UUID> = []
     private var meshStats: [UUID: (v: Int, f: Int)] = [:]
 
     // MARK: - Capability flags (resolved once)
@@ -213,7 +217,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         sessionGeneration += 1
         minimumFrameTimestamp = CACurrentMediaTime()
         clearDerivedState()
-        pendingRunOptions = [.resetTracking, .removeExistingAnchors, .resetSceneReconstruction]
+        pendingRunOptions = [.resetTracking, .removeExistingAnchors]
+        if supportsMesh { pendingRunOptions.insert(.resetSceneReconstruction) }
         if userWantsRunning {
             runState = .running
             runRequestedConfiguration()
@@ -324,7 +329,18 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             self.errorMessage = message
             self.runState = .idle
             self.userWantsRunning = false
-            self.invalidateLiveMetrics()
+            // A failed session may no longer preserve its coordinate frame.
+            // A later Start must not reuse saved overlays or perception caches
+            // as though that old world had survived the failure.
+            self.sessionGeneration += 1
+            self.minimumFrameTimestamp = CACurrentMediaTime()
+            self.pendingInitialWorldMap = nil
+            self.restoringSavedMap = false
+            self.restorationAnchorID = nil
+            self.hasLocalizedMap = false
+            self.pendingRunOptions = [.resetTracking, .removeExistingAnchors]
+            if self.supportsMesh { self.pendingRunOptions.insert(.resetSceneReconstruction) }
+            self.clearDerivedState()
             self.finishRelocalization()
         }
     }
@@ -346,7 +362,14 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     nonisolated func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
         let ids = anchors.compactMap { ($0 as? ARMeshAnchor)?.identifier }
         guard !ids.isEmpty else { return }
-        MainActor.assumeIsolated { self.applyMesh(updates: [:], removed: ids) }
+        MainActor.assumeIsolated {
+            // Resets/relocalization also remove anchors. Those events must not
+            // delete the saved baseline before its coordinate space is restored.
+            if self.runState == .running, self.trackingIsNormal, !self.isRelocalizing {
+                self.removedMeshAnchorIDs.formUnion(ids)
+            }
+            self.applyMesh(updates: [:], removed: ids)
+        }
     }
 
     nonisolated static func meshCounts(_ anchors: [ARAnchor]) -> [UUID: (v: Int, f: Int)] {
@@ -359,7 +382,10 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func applyMesh(updates: [UUID: (v: Int, f: Int)], removed: [UUID]) {
-        for (id, value) in updates { meshStats[id] = value }
+        for (id, value) in updates {
+            meshStats[id] = value
+            removedMeshAnchorIDs.remove(id)
+        }
         for id in removed { meshStats.removeValue(forKey: id) }
         meshAnchorCount = meshStats.count
         meshVertexCount = meshStats.values.reduce(0) { $0 + $1.v }
@@ -374,6 +400,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
 
     private func clearDerivedState() {
         meshStats.removeAll()
+        removedMeshAnchorIDs.removeAll()
         meshAnchorCount = 0
         meshVertexCount = 0
         meshFaceCount = 0
@@ -505,6 +532,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         trackingDescription = "Waiting for tracking"
         fps = 0
         fpsLastTimestamp = 0
+        lastFrameTimestamp = 0
         isDepthAvailable = false
         validDepthFraction = nil
     }

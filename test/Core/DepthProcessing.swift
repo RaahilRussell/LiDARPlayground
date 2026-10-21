@@ -69,7 +69,7 @@ enum DepthProcessing {
                 for x in 0..<width {
                     let idx = (y * width + x) * 4
                     let d = depthRow[x]
-                    let confOK = confRow.map { Int($0[x]) >= minConf } ?? true
+                    let confOK = confRow.map { Int($0[x]) >= minConf } ?? (minConfidence == nil)
                     var rgb = invalid
                     var valid = confOK && d.isFinite && d > 0
 
@@ -138,7 +138,7 @@ enum DepthProcessing {
             while x < width {
                 total += 1
                 let d = depthRow[x]
-                let confOK = confRow.map { Int($0[x]) >= minConf } ?? true
+                let confOK = confRow.map { Int($0[x]) >= minConf } ?? (minConfidence == nil)
                 if confOK && d.isFinite && d > 0 {
                     usable += 1
                     valid.append(d)

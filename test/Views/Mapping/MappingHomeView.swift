@@ -55,12 +55,12 @@ struct MappingHomeView: View {
             .navigationBarTitleDisplayMode(.inline)
             .task {
                 await mapping.refreshLibrary()
-                if section == .live, ar.runState == .idle { ar.start() }
+                if section == .live, ar.supportsMesh, ar.runState == .idle { ar.start() }
             }
             .onChange(of: section) { _, next in
                 if next == .library {
                     ar.pause()
-                } else if ar.runState != .running {
+                } else if ar.supportsMesh, ar.runState != .running {
                     ar.start()
                 }
             }
@@ -162,6 +162,10 @@ struct MappingHomeView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(mapping.activeMap?.name ?? "New place")
                     .font(.headline)
+                if mapping.canDisplayRestoredGeometry {
+                    Label("Saved place recognized", systemImage: "checkmark.seal.fill")
+                        .font(.caption).foregroundStyle(Theme.good)
+                }
                 HStack {
                     Stat(label: "Tracking", value: ar.trackingShort,
                          tint: ar.trackingIsNormal ? Theme.good : Theme.warn)
@@ -172,6 +176,10 @@ struct MappingHomeView: View {
                       systemImage: ar.canSaveWorldMap ? "checkmark.circle.fill" : "viewfinder")
                     .font(.caption)
                     .foregroundStyle(ar.canSaveWorldMap ? Theme.good : Theme.warn)
+                if ar.meshVertexCount >= MapLimits.maxVertices * 4 / 5 || ar.meshFaceCount >= MapLimits.maxTriangles * 4 / 5 {
+                    Text("This scan is approaching the room-map size limit. Save now, then start a separate map for the next area.")
+                        .font(.caption).foregroundStyle(Theme.warn)
+                }
                 if let error = ar.errorMessage {
                     Text(error).font(.footnote).foregroundStyle(Theme.warn)
                 }
@@ -224,12 +232,12 @@ struct MappingHomeView: View {
                           systemImage: ar.runState == .running ? "pause.fill" : "play.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .disabled(!ar.supportsWorldTracking || mapping.isBusy)
+                .disabled(!ar.supportsWorldTracking || !ar.supportsMesh || mapping.isBusy)
                 Button { showNewMap = true } label: {
                     Label("New Map", systemImage: "plus")
                         .frame(maxWidth: .infinity)
                 }
-                .disabled(!ar.supportsWorldTracking || mapping.isBusy)
+                .disabled(!ar.supportsWorldTracking || !ar.supportsMesh || mapping.isBusy)
             }
             .buttonStyle(.bordered)
         }
@@ -362,11 +370,11 @@ private struct MappingLiveSurfaceView: View {
                     lastGeneration = ar.sessionGeneration
                 }
                 if ar.runState == .running, let frame = ar.session.currentFrame {
-                    if ar.trackingIsNormal && !ar.isRelocalizing {
+                    if ar.trackingIsNormal && !ar.isRelocalizing && frame.timestamp == ar.lastFrameTimestamp {
                         let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
                         holder?.refresh(anchors: anchors, mode: .solid)
                         holder?.showSavedGeometry(mapping.canDisplayRestoredGeometry ? mapping.restoredGeometry : nil,
-                                                  excluding: Set(anchors.map(\.identifier)),
+                                                  excluding: Set(anchors.map(\.identifier)).union(ar.removedMeshAnchorIDs),
                                                   version: mapping.activeMap?.updatedAt)
                         holder?.setCameraPose(frame.camera.transform)
                     } else {

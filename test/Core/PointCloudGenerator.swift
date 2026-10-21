@@ -77,7 +77,7 @@ enum PointCloudGenerator {
             var x = 0
             while x < dw {
                 let d = depthRow[x]
-                let confOK = confRow.map { Int($0[x]) >= input.minConfidence } ?? true
+                let confOK = confRow.map { Int($0[x]) >= input.minConfidence } ?? (input.minConfidence < 0)
                 if d.isFinite && d > 0 && confOK {
                     // Unproject into ARKit camera space (x right, y up, -z forward).
                     let xc = (Float(x) - cx) * d / fx

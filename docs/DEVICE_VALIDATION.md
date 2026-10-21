@@ -81,9 +81,9 @@ and confidence-gated camera-to-world fusion.
 
 ## Build and unit tests (Mac)
 
-- [x] `xcodebuild … -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build` succeeds (command in `CLAUDE.md`).
+- [ ] `xcodebuild … -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build` succeeds for the mapping branch (command in `CLAUDE.md`).
 - [ ] No new Swift concurrency errors; review any new isolation warnings.
-- [x] `testTests` passes on an iOS 26.5 Simulator (Product ▸ Test, or
+- [ ] `testTests` passes for the mapping branch on an iOS 26.5 Simulator (Product ▸ Test, or
       `xcodebuild test -project test.xcodeproj -scheme test -destination 'platform=iOS Simulator,name=<device>'`).
       Suites: Depth refinement, Spatial algorithms, Proximity, Benchmark statistics, Demo mode, Inspector models.
 - [ ] Simulator: Bench shows "Needs a physical ARKit device"; Inspector demo mode runs; no crash.

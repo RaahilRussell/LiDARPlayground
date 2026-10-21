@@ -32,7 +32,8 @@ struct PerceptionFreshnessTests {
         return buffer
     }
 
-    private func fuse(confidence: UInt8?, tracking: Bool = true) throws -> ObjectObservation {
+    private func observations(confidence: UInt8?, tracking: Bool = true,
+                              box: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)) throws -> [ObjectObservation] {
         let depth = try #require(Fixtures.depthBuffer(width: 4, height: 4,
                                                      values: Array(repeating: 2, count: 16)))
         let frame = SensorFrame(capturedImage: depth, depthMap: depth,
@@ -42,13 +43,18 @@ struct PerceptionFreshnessTests {
             imageResolution: CGSize(width: 4, height: 4), cameraTransform: matrix_identity_float4x4,
             timestamp: 10, trackingIsNormal: tracking)
         let object = DetectedObject(id: 1, label: "chair", confidence: 0.9,
-                                    boxNormalized: CGRect(x: 0, y: 0, width: 1, height: 1), mask: nil)
-        return try #require(SpatialFusionEngine.fuse(objects: [object], frame: frame, depthMap: depth,
-                                                    erosion: 0, minCoverage: 0.2, nearPct: 0.15).first)
+                                    boxNormalized: box, mask: nil)
+        return SpatialFusionEngine.fuse(objects: [object], frame: frame, depthMap: depth,
+                                        erosion: 0, minCoverage: 0.2, nearPct: 0.15)
+    }
+
+    private func fuse(confidence: UInt8?, tracking: Bool = true) throws -> ObjectObservation {
+        try #require(observations(confidence: confidence, tracking: tracking).first)
     }
 
     @Test func lowAndMissingConfidenceCannotProduceWorldHazards() throws {
-        for confidence: UInt8? in [0, nil] {
+        let levels: [UInt8?] = [0, nil]
+        for confidence in levels {
             let observation = try fuse(confidence: confidence)
             #expect(observation.uncertain)
             #expect(observation.validDepthCoverage == 0)
@@ -64,5 +70,32 @@ struct PerceptionFreshnessTests {
         #expect(observation.validDepthCoverage == 1)
         #expect(observation.positionWorld == SIMD3<Float>(0, 0, -2))
         #expect(try fuse(confidence: 2, tracking: false).positionWorld == nil)
+    }
+
+    @Test func malformedDetectorBoxesAreRejectedBeforePixelIndexing() throws {
+        #expect(try observations(confidence: 2,
+                                 box: CGRect(x: CGFloat.nan, y: 0, width: 1, height: 1)).isEmpty)
+        #expect(try observations(confidence: 2,
+                                 box: CGRect(x: 5, y: 5, width: 1, height: 1)).isEmpty)
+        let clipped = try #require(observations(confidence: 2,
+            box: CGRect(x: -0.5, y: -0.5, width: 2, height: 2)).first)
+        #expect(!clipped.uncertain && clipped.nearestMeters == 2)
+    }
+
+    @Test func liveGeometryRespectsCautionDistanceBeyondOccupancyThreshold() throws {
+        let occupancy = SpatialAlgorithms.occupancy(cameraPoints: Fixtures.pointsAhead(1.5),
+                                                    confidences: Array(repeating: 1, count: 10))
+        #expect(occupancy.first { $0.id == .center }?.occupancy == .observedFree)
+        let input = try #require(ProximityDriver.occupancyInput(from: occupancy, cautionDistance: 2))
+        var machine = ProximityStateMachine()
+        machine.step(nearest: input.meters, confidence: input.confidence)
+        #expect(machine.state == .caution)
+    }
+
+    @Test func distantSideObservationCannotClearUnknownForwardPath() {
+        let occupancy = SpatialAlgorithms.occupancy(cameraPoints: Fixtures.pointsAhead(3, azimuth: 0.6),
+                                                    confidences: Array(repeating: 1, count: 10))
+        #expect(occupancy.first { $0.id == .center }?.occupancy == .unknown)
+        #expect(ProximityDriver.occupancyInput(from: occupancy, cautionDistance: 2) == nil)
     }
 }

@@ -48,7 +48,7 @@ existing **Developer** tools.
    If recognition takes too long, follow the guidance or cancel to start fresh.
 
 Each saved place contains a securely archived `ARWorldMap`, independent copied
-triangle geometry, a camera trail, a reference photo, and versioned metadata.
+triangle geometry, a camera trail, a reference photo when available, and versioned metadata.
 Files stay in local Application Support. Writes commit a complete revision
 before replacing the manifest, so a failed save preserves the previous version.
 Scans are bounded to 750,000 vertices and 1,500,000 triangles; split larger areas

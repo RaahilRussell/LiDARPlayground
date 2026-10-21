@@ -15,12 +15,9 @@ import simd
 @MainActor
 final class ARSensorProvider {
     private unowned let manager: ARSessionManager
-    private var observedGeneration: Int
-    private var firstAcceptedTimestamp: TimeInterval = -.infinity
 
     init(manager: ARSessionManager) {
         self.manager = manager
-        observedGeneration = manager.sessionGeneration
     }
 
     var isRunning: Bool { manager.runState == .running }
@@ -31,15 +28,11 @@ final class ARSensorProvider {
     /// Cheap: copies buffer references + a few scalars (no pixel work).
     func snapshot() -> SensorFrame? {
         guard isRunning, !manager.isRelocalizing else { return nil }
-        guard let frame = manager.session.currentFrame else { return nil }
-        if observedGeneration != sessionGeneration {
-            observedGeneration = sessionGeneration
-            // ARKit may still expose the previous world's currentFrame directly
-            // after run(resetTracking:). Wait for a subsequently delivered frame.
-            firstAcceptedTimestamp = frame.timestamp
-        }
-        guard frame.timestamp > firstAcceptedTimestamp,
-              Self.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return nil }
+        guard let frame = manager.session.currentFrame,
+              frame.timestamp == manager.lastFrameTimestamp else { return nil }
+        // The manager accepts timestamps only after the current world's reset
+        // boundary, so this cannot expose ARKit's temporarily retained old frame.
+        guard Self.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return nil }
         let trackingNormal: Bool
         if case .normal = frame.camera.trackingState { trackingNormal = true } else { trackingNormal = false }
         return SensorFrame(

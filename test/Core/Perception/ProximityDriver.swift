@@ -230,20 +230,32 @@ final class ProximityDriver {
                       label: primary.label, ttc: primary.ttc, bearing: primary.bearingDeg)
     }
 
-    /// Raw-geometry fallback: nearest occupied / low-confidence region.
+    /// Raw geometry uses the measured distance even when the occupancy grid's
+    /// fixed one-metre threshold labels a cell free. Proximity thresholds remain
+    /// independently configurable (the default caution distance is two metres).
     private func occupancyHazard() -> Hazard? {
-        let candidates = spatial.occupancy.filter { $0.occupancy == .occupied || $0.occupancy == .lowConfidence }
-        guard let nearest = candidates.min(by: {
-            ($0.nearestMeters ?? .greatestFiniteMagnitude) < ($1.nearestMeters ?? .greatestFiniteMagnitude)
-        }), let d = nearest.nearestMeters else { return nil }
+        guard let nearest = Self.occupancyInput(from: spatial.occupancy,
+                                                cautionDistance: proximity.cautionDistance) else { return nil }
         let bearing: Float
-        switch nearest.id {
+        switch nearest.region {
         case .left: bearing = -45
         case .right: bearing = 45
         case .center: bearing = 0
         }
-        return Hazard(distance: d, confidence: nearest.meanConfidence, region: nearest.id,
+        return Hazard(distance: nearest.meters, confidence: nearest.confidence, region: nearest.region,
                       label: nil, ttc: nil, bearing: bearing)
+    }
+
+    nonisolated static func occupancyInput(from regions: [RegionOccupancy], cautionDistance: Float)
+        -> (meters: Float, confidence: Float, region: SpatialRegion)? {
+        // A distant side sample must not assert that an unobserved forward path
+        // is clear. Nearby side hazards may still produce a caution cue.
+        let candidates = regions.filter { region in
+            guard let distance = region.nearestMeters, distance.isFinite, distance > 0,
+                  region.meanConfidence.isFinite else { return false }
+            return region.id == .center || distance <= cautionDistance
+        }
+        return ProximityInputSelector.select(from: candidates)
     }
 
     // MARK: - Clean alert log (transitions only)

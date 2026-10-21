@@ -24,6 +24,7 @@ enum MeshGeometryBuilder {
 
     static func build(_ mesh: ARMeshGeometry, mode: MeshDisplayMode) -> SCNGeometry {
         let verts = mesh.vertices
+        let normals = mesh.normals
         let faces = mesh.faces
 
         let vertexSource = SCNGeometrySource(
@@ -34,14 +35,23 @@ enum MeshGeometryBuilder {
             dataOffset: verts.offset,
             dataStride: verts.stride)
 
-        let indexData = Data(bytes: faces.buffer.contents(), count: faces.buffer.length)
+        let normalSource = SCNGeometrySource(
+            buffer: normals.buffer,
+            vertexFormat: normals.format,
+            semantic: .normal,
+            vertexCount: normals.count,
+            dataOffset: normals.offset,
+            dataStride: normals.stride)
+
+        let indexByteCount = faces.count * faces.indexCountPerPrimitive * faces.bytesPerIndex
+        let indexData = Data(bytes: faces.buffer.contents(), count: indexByteCount)
         let element = SCNGeometryElement(
             data: indexData,
             primitiveType: .triangles,
             primitiveCount: faces.count,
             bytesPerIndex: faces.bytesPerIndex)
 
-        var sources = [vertexSource]
+        var sources = [vertexSource, normalSource]
         if mode == .classification, let colors = classificationColors(mesh) {
             let colorData = colors.withUnsafeBytes { Data($0) }
             let colorSource = SCNGeometrySource(
