@@ -27,6 +27,7 @@ final class MappingCoordinator {
 
     private let manager: ARSessionManager
     private let store: MapStore
+    private weak var perception: PerceptionSystem?
     private var operationID = UUID()
     private var activeGeneration: Int?
     private var requiresRelocalization = false
@@ -68,6 +69,7 @@ final class MappingCoordinator {
     /// Saving and live sensing have independent failure recovery. A storage
     /// error must not turn off the shared camera used by CV and LiDAR diagnostics.
     var automaticSaveNeedsAttention: Bool { automaticSaveBlocked }
+    private var restoredPerceptionHazards: [SavedPerceptionHazard] = []
 
     var activeMap: SavedMapMetadata? {
         activeGeneration == manager.sessionGeneration ? storedActiveMap : nil
@@ -95,6 +97,12 @@ final class MappingCoordinator {
             self.colorCapture.observe(frame: frame, generation: generation,
                                       eligibleAnchorIDs: self.manager.currentSegmentMeshIDs)
         }
+    }
+
+    /// Connects mapping to the already-created perception system. This keeps one
+    /// ARSession while allowing mapping saves to include fused height results.
+    func attach(perception: PerceptionSystem) {
+        self.perception = perception
     }
 
     /// Called once by the application, independent of whichever screen is open.
@@ -163,6 +171,7 @@ final class MappingCoordinator {
             // iOS does not permit continuous camera mapping in the background.
             // Periodic durable checkpoints protect the most recent valid scan.
             manager.handleResignActive()
+            perception?.stopForMapping()
             UIApplication.shared.isIdleTimerDisabled = false
             navigation.pause()
             textRecognition.pause()
@@ -172,6 +181,7 @@ final class MappingCoordinator {
 
     func pauseAutomaticMapping() {
         manager.pause()
+        perception?.stopForMapping()
         UIApplication.shared.isIdleTimerDisabled = false
         navigation.pause()
         textRecognition.pause()
@@ -200,6 +210,7 @@ final class MappingCoordinator {
         UIApplication.shared.isIdleTimerDisabled = foregroundActive &&
             manager.runState == .running && !manager.isUserPaused
         guard foregroundActive, manager.runState == .running, !manager.isUserPaused else { return }
+        perception?.startForMapping()
         navigation.startRecording()
         if !segmentClosing && pendingSegmentCapture == nil { textRecognition.start() }
     }
@@ -208,6 +219,7 @@ final class MappingCoordinator {
         synchronizeGeneration()
         guard foregroundActive else { return }
         guard !manager.isUserPaused else {
+            perception?.stopForMapping()
             UIApplication.shared.isIdleTimerDisabled = false
             navigation.pause()
             textRecognition.pause()
@@ -246,6 +258,10 @@ final class MappingCoordinator {
                 requiresPlaceChoice = manager.relocalizationTimedOut
             }
             return
+        }
+        if !restoredPerceptionHazards.isEmpty, canDisplayRestoredGeometry {
+            perception?.hazardMap.restorePersistentSnapshot(restoredPerceptionHazards)
+            restoredPerceptionHazards = []
         }
         automaticRestoreAttempt = false
         requiresPlaceChoice = false
@@ -343,6 +359,10 @@ final class MappingCoordinator {
                 return try await saveRetainedCheckpoint(name: normalizedName,
                     operation: operation, generation: generation)
             }
+            // Capture perception evidence while this world is proven, before
+            // awaiting ARKit or encoding. An outage must not reclassify saved
+            // context as a fresh observation or erase it with an empty live set.
+            let perceptionSnapshot = manager.canSaveWorldMap ? perception?.hazardMap.persistentSnapshot() : nil
             let capture: MappingSessionCapture
             if closeSegment, pendingSegmentGeneration == generation,
                !pendingSegmentNeedsRefresh, let pendingSegmentCapture {
@@ -400,6 +420,7 @@ final class MappingCoordinator {
             geometry.navigation = navigation.graphForSaving()
             geometry.textAnnotations = textRecognition.annotations
             geometry.directionalSignage = textRecognition.directionalSignage
+            if let perceptionSnapshot { geometry.perceptionHazards = perceptionSnapshot }
             let previous = continuesSavedMap ? activeMap : nil
             let now = Date()
             let metadata = SavedMapMetadata(
@@ -443,7 +464,8 @@ final class MappingCoordinator {
                 manager.resumeReconstructionAfterCheckpointFailure()
             }
             if automatic, let sessionError = error as? MappingSessionError,
-               sessionError == .notReady || sessionError == .changedSession || sessionError == .noSurface {
+               sessionError == .notReady || sessionError == .changedSession || sessionError == .noSurface ||
+                sessionError == .captureTimedOut || sessionError == .captureBusy {
                 // A moving camera can briefly lose quality; retry with backoff.
                 automaticState = manager.relocalizationGuidance
             } else {
@@ -556,6 +578,9 @@ final class MappingCoordinator {
             savedTrailPrefix = archive.geometry.trail
             storedGeometry = archive.geometry
             storedReferenceImageData = archive.referenceImageData
+            // Keep historical evidence hidden until ARKit confirms that this
+            // session is localized in the saved coordinate space.
+            restoredPerceptionHazards = archive.geometry.perceptionHazards
             observedGeneration = manager.sessionGeneration
             try retainCheckpoint(archive, generation: observedGeneration, capturedAt: archive.metadata.updatedAt)
             colorCapture.restore(geometry: archive.geometry, generation: observedGeneration)
@@ -633,6 +658,7 @@ final class MappingCoordinator {
         storedActiveMap = nil
         storedGeometry = nil
         storedReferenceImageData = nil
+        restoredPerceptionHazards = []
         savedTrailPrefix = []
         requiresRelocalization = false
         activeGeneration = manager.sessionGeneration
@@ -662,6 +688,7 @@ final class MappingCoordinator {
         savedTrailPrefix = []
         storedGeometry = nil
         storedReferenceImageData = nil
+        restoredPerceptionHazards = []
         nextPlaceID = nil
         nextSegmentIndex = 0
         nextSegmentName = nil
@@ -727,6 +754,8 @@ final class MappingCoordinator {
         result.navigation = current.navigation ?? baseline?.navigation
         result.textAnnotations = mergeByID(baseline?.textAnnotations ?? [], current.textAnnotations)
         result.directionalSignage = mergeByID(baseline?.directionalSignage ?? [], current.directionalSignage)
+        result.perceptionHazards = current.perceptionHazards.isEmpty ?
+            (baseline?.perceptionHazards ?? []) : current.perceptionHazards
         try result.validate()
         return result
     }

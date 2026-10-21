@@ -702,7 +702,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func applyMesh(updates: [UUID: (v: Int, f: Int)], removed: [UUID]) {
-        guard !reconstructionHeld, !requiresRecoveryOriginProof else { return }
+        guard !reconstructionHeld, !restoringSavedMap, !requiresRecoveryOriginProof else { return }
         mappingRevision &+= 1
         for (id, value) in updates {
             guard segmentMeshIDs == nil || !retiredMeshIDs.contains(id) || retiredMeshRemovals.contains(id) else { continue }

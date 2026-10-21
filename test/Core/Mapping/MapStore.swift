@@ -145,7 +145,11 @@ actor MapStore {
     }
 
     private func requireDirectory(_ url: URL) throws {
-        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        // The location may have been repaired or replaced after a failed save.
+        // URL resource caches must not preserve an obsolete type or symlink bit.
+        var currentURL = url
+        currentURL.removeAllCachedResourceValues()
+        let values = try currentURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else {
             throw MapStorageError.invalidArchive("unexpected storage location")
         }
@@ -178,7 +182,9 @@ actor MapStore {
     }
 
     private func readBounded(_ url: URL, maximum: Int) throws -> Data {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        var currentURL = url
+        currentURL.removeAllCachedResourceValues()
+        let values = try currentURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
               let size = values.fileSize, size >= 0 else {
             throw MapStorageError.invalidArchive("missing or invalid \(url.lastPathComponent)")

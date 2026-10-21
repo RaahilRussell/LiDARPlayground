@@ -57,6 +57,18 @@ nonisolated struct MapPosition: Codable, Sendable, Equatable {
     }
 }
 
+/// Durable world-space perception data. Camera-relative values such as TTC are
+/// intentionally not stored; they are recomputed after relocalization.
+nonisolated struct SavedPerceptionHazard: Codable, Sendable, Equatable {
+    var position: MapPosition
+    var radius: Float
+    var label: String?
+    var confidence: Float
+    var minHeight: Float?
+    var maxHeight: Float?
+    var height: ObstacleHeight
+}
+
 nonisolated struct SavedMapMetadata: Codable, Identifiable, Sendable, Equatable {
     var id: UUID
     var name: String
@@ -202,17 +214,20 @@ nonisolated struct SavedMapGeometry: Codable, Sendable, Equatable {
     var navigation: SavedNavigationGraph?
     var textAnnotations: [SavedTextAnnotation]
     var directionalSignage: [SavedDirectionalSignage]
+    var perceptionHazards: [SavedPerceptionHazard]
 
     init(meshes: [MapMeshSnapshot], trail: [MapPosition], keyframes: [SavedMapKeyframe] = [],
          navigation: SavedNavigationGraph? = nil, textAnnotations: [SavedTextAnnotation] = [],
-         directionalSignage: [SavedDirectionalSignage] = []) {
+         directionalSignage: [SavedDirectionalSignage] = [],
+         perceptionHazards: [SavedPerceptionHazard] = []) {
         self.meshes = meshes; self.trail = trail; self.keyframes = keyframes
         self.navigation = navigation; self.textAnnotations = textAnnotations
         self.directionalSignage = directionalSignage
+        self.perceptionHazards = perceptionHazards
     }
 
     private nonisolated enum CodingKeys: String, CodingKey {
-        case meshes, trail, keyframes, navigation, textAnnotations, directionalSignage
+        case meshes, trail, keyframes, navigation, textAnnotations, directionalSignage, perceptionHazards
     }
 
     init(from decoder: Decoder) throws {
@@ -223,6 +238,7 @@ nonisolated struct SavedMapGeometry: Codable, Sendable, Equatable {
         navigation = try c.decodeIfPresent(SavedNavigationGraph.self, forKey: .navigation)
         textAnnotations = try c.decodeIfPresent([SavedTextAnnotation].self, forKey: .textAnnotations) ?? []
         directionalSignage = try c.decodeIfPresent([SavedDirectionalSignage].self, forKey: .directionalSignage) ?? []
+        perceptionHazards = try c.decodeIfPresent([SavedPerceptionHazard].self, forKey: .perceptionHazards) ?? []
     }
 
     var vertexCount: Int { meshes.reduce(0) { $0 + $1.vertexCount } }
@@ -235,6 +251,17 @@ nonisolated struct SavedMapGeometry: Codable, Sendable, Equatable {
               textAnnotations.count <= MapLimits.maxTextAnnotations,
               directionalSignage.count <= MapLimits.maxDirectionalSignage else {
             throw MapStorageError.tooLarge("map")
+        }
+        guard perceptionHazards.count <= 200 else {
+            throw MapStorageError.tooLarge("perception hazards")
+        }
+        for hazard in perceptionHazards {
+            guard hazard.position.isValid,
+                  hazard.radius.isFinite, hazard.radius >= 0, hazard.radius <= 100,
+                  hazard.confidence.isFinite, (0...1).contains(hazard.confidence),
+                  [hazard.minHeight, hazard.maxHeight].compactMap({ $0 }).allSatisfy({ $0.isFinite && abs($0) <= 100 }) else {
+                throw MapStorageError.invalidGeometry("invalid perception hazard")
+            }
         }
         var ids = Set<UUID>()
         var vertices = 0

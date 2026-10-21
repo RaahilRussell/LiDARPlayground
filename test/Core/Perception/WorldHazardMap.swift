@@ -31,6 +31,8 @@ final class WorldHazardMap {
         var lastSeen: TimeInterval
         var lastRange: Float? = nil
         var closingSpeed: Float = 0   // m/s toward the user (smoothed)
+        var minHeight: Float? = nil   // metres above floor (bottom of the object)
+        var maxHeight: Float? = nil   // metres above floor (top of the object)
     }
 
     /// Nearest hazard in a direction, expressed relative to the current pose.
@@ -43,12 +45,15 @@ final class WorldHazardMap {
         var confidence: Float
         var ttc: Float?           // seconds to collision (nil if not closing)
         var closingSpeed: Float   // m/s
+        var height: ObstacleHeight = .unknown
     }
 
     // Published view of the current situation.
     private(set) var hazards: [Hazard] = []
     private(set) var zones: [ZoneHazard] = []        // nearest per L/C/R (persistent)
     private(set) var corridorNearest: ZoneHazard?    // nearest in the body-width path
+    /// Archived context is retained for display/export, never live proximity.
+    private(set) var savedContext: [SavedPerceptionHazard] = []
 
     // Tunables.
     var maxAge: TimeInterval = 5
@@ -74,6 +79,7 @@ final class WorldHazardMap {
     }
 
     func attach(provider: ARSensorProvider) { self.provider = provider }
+    var isRunning: Bool { loopTask != nil }
 
     func start() {
         guard loopTask == nil else { return }
@@ -87,6 +93,44 @@ final class WorldHazardMap {
     func clearResults() {
         hazards = []; zones = []; corridorNearest = nil
         lastRecomputeTime = 0; lastFusionTimestamp = -1; lastSpatialTimestamp = -1
+    }
+
+    /// Exports only stable, high-confidence world results for map persistence.
+    /// Motion-derived fields are intentionally omitted and rebuilt on revisit.
+    func persistentSnapshot() -> [SavedPerceptionHazard] {
+        if let provider, sessionGeneration != provider.sessionGeneration { return [] }
+        let live = hazards.filter { $0.confidence >= 0.45 }.compactMap { hazard -> SavedPerceptionHazard? in
+            let position = MapPosition(x: hazard.world.x, y: hazard.world.y, z: hazard.world.z)
+            guard position.isValid else { return nil }
+            return SavedPerceptionHazard(
+                position: position,
+                radius: hazard.radius,
+                label: hazard.label,
+                confidence: hazard.confidence,
+                minHeight: hazard.minHeight,
+                maxHeight: hazard.maxHeight,
+                height: ObstacleHeight.classify(minHeight: hazard.minHeight, maxHeight: hazard.maxHeight))
+        }
+        let historical = savedContext.filter { saved in
+            !live.contains { current in
+                simd_distance(SIMD3(saved.position.x, saved.position.y, saved.position.z),
+                              SIMD3(current.position.x, current.position.y, current.position.z)) < mergeRadius
+            }
+        }
+        return Array((live + historical).prefix(200))
+    }
+
+    /// Saved observations have no current sensor evidence. They stay separate
+    /// from live hazards until the camera/LiDAR observes this location again.
+    func restorePersistentSnapshot(_ snapshot: [SavedPerceptionHazard]) {
+        clearResults()
+        savedContext = Array(snapshot.prefix(200).filter { saved in
+            guard saved.position.isValid, saved.radius.isFinite, saved.radius >= 0,
+                  saved.radius <= 100, saved.confidence.isFinite, (0...1).contains(saved.confidence),
+                  [saved.minHeight, saved.maxHeight].compactMap({ $0 }).allSatisfy({ $0.isFinite && abs($0) <= 100 }) else { return false }
+            return true
+        })
+        sessionGeneration = provider?.sessionGeneration ?? sessionGeneration
     }
 
     private func loop() async {
@@ -103,6 +147,7 @@ final class WorldHazardMap {
         guard let provider else { clearResults(); return }
         if sessionGeneration != provider.sessionGeneration {
             clearResults()
+            savedContext = []
             sessionGeneration = provider.sessionGeneration
         }
         guard let frame = provider.snapshot(), frame.trackingIsNormal else {
@@ -118,8 +163,10 @@ final class WorldHazardMap {
                 && obs.timestamp > lastFusionTimestamp
                 && provider.isCurrentObservation(timestamp: obs.timestamp) {
                 if let world = obs.positionWorld {
+                    let heights = heightBounds(points: obs.boundsCornersWorld)
                     upsert(world: world, radius: 0.25, label: obs.label,
-                           confidence: obs.confidence, now: obs.timestamp)
+                           confidence: obs.confidence, now: obs.timestamp,
+                           minHeight: heights?.min, maxHeight: heights?.max)
                 }
             }
             if let timestamp = fusion.observations.map(\.timestamp).max() {
@@ -132,8 +179,10 @@ final class WorldHazardMap {
                 for cluster in spatial.clusters {
                     let extent = cluster.maxBound - cluster.minBound
                     let radius = max(0.15, simd_length(extent) * 0.5)
+                    let heights = heightBounds(for: cluster, floor: spatial.floor)
                     upsert(world: cluster.centroid, radius: radius, label: nil,
-                           confidence: 0.5, now: spatial.frameTimestamp)
+                           confidence: 0.5, now: spatial.frameTimestamp,
+                           minHeight: heights?.min, maxHeight: heights?.max)
                 }
                 lastSpatialTimestamp = spatial.frameTimestamp
             }
@@ -144,7 +193,8 @@ final class WorldHazardMap {
     }
 
     private func upsert(world: SIMD3<Float>, radius: Float, label: String?,
-                        confidence: Float, now: TimeInterval) {
+                        confidence: Float, now: TimeInterval,
+                        minHeight: Float? = nil, maxHeight: Float? = nil) {
         if let idx = hazards.firstIndex(where: { simd_distance($0.world, world) < mergeRadius }) {
             // Smooth position; keep the most informative label.
             hazards[idx].world = 0.6 * hazards[idx].world + 0.4 * world
@@ -152,9 +202,12 @@ final class WorldHazardMap {
             hazards[idx].confidence = max(hazards[idx].confidence, confidence)
             hazards[idx].lastSeen = now
             if hazards[idx].label == nil { hazards[idx].label = label }
+            if let minHeight { hazards[idx].minHeight = minHeight }
+            if let maxHeight { hazards[idx].maxHeight = maxHeight }
         } else {
             hazards.append(Hazard(id: nextId, world: world, radius: radius,
-                                  label: label, confidence: confidence, lastSeen: now))
+                                  label: label, confidence: confidence, lastSeen: now,
+                                  minHeight: minHeight, maxHeight: maxHeight))
             nextId += 1
         }
     }
@@ -200,7 +253,9 @@ final class WorldHazardMap {
                 : (bearing > centerHalfAngleDeg ? .right : .center)
             let candidate = ZoneHazard(region: region, distance: distance, bearingDeg: bearing,
                                        label: hazards[i].label, confidence: hazards[i].confidence,
-                                       ttc: ttc, closingSpeed: closingSpeed)
+                                       ttc: ttc, closingSpeed: closingSpeed,
+                                       height: ObstacleHeight.classify(minHeight: hazards[i].minHeight,
+                                                                       maxHeight: hazards[i].maxHeight))
             // Prefer the riskier candidate per region (smaller TTC, else smaller distance).
             if isRiskier(candidate, than: best[region]) { best[region] = candidate }
             if abs(lx) <= corridorHalfWidth, forward > 0, isRiskier(candidate, than: corridor) {
@@ -210,6 +265,30 @@ final class WorldHazardMap {
 
         zones = [SpatialRegion.left, .center, .right].compactMap { best[$0] }
         corridorNearest = corridor
+    }
+
+    private func heightBounds(points: [SIMD3<Float>]) -> (min: Float, max: Float)? {
+        guard spatial.hasWorldCoordinates, spatial.sessionGeneration == sessionGeneration,
+              provider?.isCurrentObservation(timestamp: spatial.frameTimestamp) == true,
+              let floor = spatial.floor, !points.isEmpty else { return nil }
+        let distances = points.map(floor.signedDistance)
+        guard distances.allSatisfy({ $0.isFinite }), let min = distances.min(), let max = distances.max() else {
+            return nil
+        }
+        return (min, max)
+    }
+
+    private func heightBounds(for cluster: PointCluster, floor: FloorPlane?) -> (min: Float, max: Float)? {
+        guard let floor else { return nil }
+        let distances = [cluster.minBound.x, cluster.maxBound.x].flatMap { x in
+            [cluster.minBound.y, cluster.maxBound.y].flatMap { y in
+                [cluster.minBound.z, cluster.maxBound.z].map { z in floor.signedDistance(SIMD3(x, y, z)) }
+            }
+        }
+        guard distances.allSatisfy({ $0.isFinite }), let min = distances.min(), let max = distances.max() else {
+            return nil
+        }
+        return (min, max)
     }
 
     /// Risk ordering: a closing hazard (finite TTC) outranks non-closing; among

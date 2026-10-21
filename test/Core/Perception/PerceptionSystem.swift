@@ -35,6 +35,9 @@ final class PerceptionSystem {
     private var resumeProximity = false
     private var demands = PerceptionPipelineDemand()
     private let guidanceConsumer = UUID()
+    private let mappingConsumer = UUID()
+    private var mappingHasStarted = false
+    private(set) var mappingPerceptionRunning = false
 
     init() {
         feedback = FeedbackCoordinator(haptics: haptics, spatialCue: spatialCue)
@@ -61,6 +64,7 @@ final class PerceptionSystem {
     }
 
     func acquire(_ pipelines: PerceptionPipelines, for consumer: UUID) {
+        let pipelines = pipelines.contains(.proximity) ? pipelines.union(.hazards) : pipelines
         // A benchmark restores its saved inference configuration on cancellation.
         // Finish that restoration before the incoming screen requests engines.
         profiler.cancel(reason: "Started another perception feature")
@@ -70,6 +74,7 @@ final class PerceptionSystem {
         if spatial.isRunning { running.insert(.spatial) }
         if proximityDriver.running || resumeProximity { running.insert(.proximity) }
         if depth.isRunning { running.insert(.depth) }
+        if hazardMap.isRunning { running.insert(.hazards) }
         apply(demands.acquire(pipelines, for: consumer, running: running))
     }
 
@@ -83,10 +88,12 @@ final class PerceptionSystem {
         if change.stop.contains(.fusion) { fusion.stop() }
         if change.stop.contains(.vision) { vision.stop() }
         if change.stop.contains(.depth) { depth.stop() }
+        if change.stop.contains(.hazards) { hazardMap.stop() }
         if change.start.contains(.vision) { vision.start() }
         if change.start.contains(.fusion) { fusion.start() }
         if change.start.contains(.spatial) { spatial.start() }
         if change.start.contains(.depth) { depth.start() }
+        if change.start.contains(.hazards) { hazardMap.start() }
         if change.start.contains(.proximity) {
             if foregroundActive { proximityDriver.start() } else { resumeProximity = true }
         }
@@ -107,6 +114,26 @@ final class PerceptionSystem {
         inspector.attach(provider: provider, system: self)
         guidance.attach(ar: manager)
         configured = true
+    }
+
+    /// Starts the model/depth/fusion stack alongside MappingCoordinator. Both
+    /// consumers read the same ARSession; mapping never creates a second camera.
+    func startForMapping() {
+        guard configured, !mappingPerceptionRunning else { return }
+        mappingPerceptionRunning = true
+        // Mapping is the durable pass, so prefer the highest bundled detector
+        // rather than the low-latency preview variant used by the live console.
+        if !mappingHasStarted, !vision.isEnabled { vision.selectedVariant = .medium }
+        mappingHasStarted = true
+        acquire(.mapping, for: mappingConsumer)
+    }
+
+    /// Releases mapping's pipeline demand when mapping is paused or backgrounded.
+    /// Other active tools keep their independently requested engines.
+    func stopForMapping() {
+        guard mappingPerceptionRunning else { return }
+        mappingPerceptionRunning = false
+        release(mappingConsumer)
     }
 
     /// Leaving the foreground invalidates measurements and live inputs: cancel the

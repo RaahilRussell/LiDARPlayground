@@ -11,7 +11,10 @@ struct MapCheckpointRecoveryTests {
         let geometry = SavedMapGeometry(meshes: [MapMeshSnapshot(id: UUID(),
             vertices: [0, 0, 0, 1, 0, 0, 0, 1, 0], triangleIndices: [0, 1, 2],
             vertexColors: [1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1])],
-            trail: [MapPosition(x: 0, y: 1, z: 2)])
+            trail: [MapPosition(x: 0, y: 1, z: 2)],
+            perceptionHazards: [SavedPerceptionHazard(position: MapPosition(x: 1, y: 1, z: -2),
+                radius: 0.25, label: "chair", confidence: 0.9,
+                minHeight: 0, maxHeight: 1, height: .unknown)])
         return MapArchive(metadata: SavedMapMetadata(id: UUID(), name: "Hallway",
             createdAt: capturedAt, updatedAt: capturedAt, anchorCount: 1, vertexCount: 3, faceCount: 1),
             geometry: geometry, worldMapData: Data([1, 2, 3]), referenceImageData: nil)
@@ -60,6 +63,7 @@ struct MapCheckpointRecoveryTests {
         #expect(mapping.retainedCheckpointAt == capturedAt)
         try FileManager.default.removeItem(at: root)
         await mapping.saveMap(name: "Recovered hall")
+        try #require(mapping.errorMessage == nil)
         let saved = try await store.load(id: original.metadata.id)
         #expect(saved.geometry == original.geometry)
         #expect(mapping.errorMessage == nil)

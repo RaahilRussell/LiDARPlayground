@@ -14,7 +14,7 @@ struct PerceptionLifecycleTests {
         #expect(second.start.isEmpty)
         let stoppedAssist = demand.release(assist)
         #expect(!stoppedAssist.stop.contains(.vision))
-        #expect(stoppedAssist.stop == [.fusion, .spatial, .proximity])
+        #expect(stoppedAssist.stop == [.fusion, .spatial, .proximity, .hazards])
         let stoppedAI = demand.release(camera)
         #expect(stoppedAI.stop == .vision)
     }
@@ -24,7 +24,7 @@ struct PerceptionLifecycleTests {
         let camera = UUID(), assist = UUID()
         _ = demand.acquire(.vision, for: camera, running: [])
         let second = demand.acquire(.guidance, for: assist, running: .vision)
-        #expect(second.start == [.fusion, .spatial, .proximity])
+        #expect(second.start == [.fusion, .spatial, .proximity, .hazards])
         let disappearing = demand.release(camera)
         #expect(disappearing.stop.isEmpty)
         let final = demand.release(assist)
@@ -58,9 +58,9 @@ struct PerceptionLifecycleTests {
         var demand = PerceptionPipelineDemand()
         let view = UUID()
         let started = demand.acquire(.guidance, for: view, running: [.vision, .proximity])
-        #expect(started.start == [.fusion, .spatial])
+        #expect(started.start == [.fusion, .spatial, .hazards])
         let stopped = demand.release(view)
-        #expect(stopped.stop == [.fusion, .spatial])
+        #expect(stopped.stop == [.fusion, .spatial, .hazards])
     }
 
     @Test func reacquiringSameConsumerDoesNotAddAnUnreleasableReference() {
@@ -83,8 +83,60 @@ struct PerceptionLifecycleTests {
     }
 
     private func cleanUp(_ system: PerceptionSystem) {
+        system.stopForMapping()
         system.guidance.stop(); system.proximityDriver.stop()
         system.spatial.stop(); system.fusion.stop(); system.vision.stop()
+        system.hazardMap.stop(); system.depth.stop()
+    }
+
+    @Test func stoppingAssistRetainsMappingHazardCaptureInEitherStartOrder() {
+        for mappingFirst in [true, false] {
+            let system = system()
+            defer { cleanUp(system) }
+            let manager = ARSessionManager()
+            system.configure(with: manager)
+            if mappingFirst { system.startForMapping() }
+            system.guidance.start()
+            if !mappingFirst { system.startForMapping() }
+            system.guidance.stop()
+            #expect(system.hazardMap.isRunning && system.fusion.isRunning && system.spatial.isRunning)
+            #expect(system.depth.isRunning && !system.proximityDriver.running)
+            system.stopForMapping()
+            #expect(!system.hazardMap.isRunning && !system.fusion.isRunning && !system.spatial.isRunning)
+            #expect(!system.depth.isRunning && system.vision.isEnabled)
+        }
+    }
+
+    @Test func stoppingMappingRetainsAssistAlertsInEitherStartOrder() {
+        for mappingFirst in [true, false] {
+            let system = system()
+            defer { cleanUp(system) }
+            let manager = ARSessionManager()
+            system.configure(with: manager)
+            if mappingFirst { system.startForMapping() }
+            system.guidance.start()
+            if !mappingFirst { system.startForMapping() }
+            system.stopForMapping()
+            #expect(system.hazardMap.isRunning && system.fusion.isRunning && system.spatial.isRunning)
+            #expect(system.proximityDriver.running && !system.depth.isRunning)
+            system.guidance.stop()
+            #expect(!system.hazardMap.isRunning && !system.proximityDriver.running)
+            #expect(!system.fusion.isRunning && !system.spatial.isRunning)
+        }
+    }
+
+    @Test func mappingRestartPreservesUserSelectedDetector() {
+        let system = system()
+        defer { cleanUp(system) }
+        let manager = ARSessionManager()
+        system.configure(with: manager)
+        system.vision.selectedVariant = .small
+        system.startForMapping()
+        #expect(system.vision.selectedVariant == .small)
+        system.stopForMapping()
+        system.vision.selectedVariant = .nano
+        system.startForMapping()
+        #expect(system.vision.selectedVariant == .nano)
     }
 
     @Test func routeSpeechHandoffKeepsCVSpatialAndProximityRunning() {

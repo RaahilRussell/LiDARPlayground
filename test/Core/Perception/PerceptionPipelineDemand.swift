@@ -7,8 +7,10 @@ nonisolated struct PerceptionPipelines: OptionSet, Sendable {
     static let spatial = Self(rawValue: 1 << 2)
     static let proximity = Self(rawValue: 1 << 3)
     static let depth = Self(rawValue: 1 << 4)
+    static let hazards = Self(rawValue: 1 << 5)
     static let fused: Self = [.vision, .fusion, .spatial]
-    static let guidance: Self = [.vision, .fusion, .spatial, .proximity]
+    static let guidance: Self = [.vision, .fusion, .spatial, .proximity, .hazards]
+    static let mapping: Self = [.vision, .depth, .fusion, .spatial, .hazards]
 }
 
 /// A view has its own stable ID, so either SwiftUI transition ordering is safe.
