@@ -116,6 +116,23 @@ final class HapticCoordinator {
         }
     }
 
+    /// Immediate single transient with NO cooldown/priority — the graded proximity
+    /// pulse train controls its own cadence, so it bypasses the discrete-event gate.
+    func pulse(intensity: Float, sharpness: Float) {
+        guard enabled, supportsHaptics, let engine else { return }
+        do {
+            let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
+                CHHapticEventParameter(parameterID: .hapticIntensity, value: max(0, min(1, intensity))),
+                CHHapticEventParameter(parameterID: .hapticSharpness, value: max(0, min(1, sharpness)))
+            ], relativeTime: 0)
+            let pattern = try CHHapticPattern(events: [event], parameters: [])
+            let player = try engine.makePlayer(with: pattern)
+            try player.start(atTime: 0)
+        } catch {
+            engineState = "pulse failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Pattern library
 
     private func events(for pattern: HapticPattern) -> [CHHapticEvent] {

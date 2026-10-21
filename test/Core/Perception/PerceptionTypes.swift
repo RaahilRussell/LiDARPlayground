@@ -205,4 +205,8 @@ nonisolated struct ProximityEvent: Identifiable, Sendable {
     var hapticEnqueuedAt: TimeInterval?
     var patternName: String?
     var processingLatencyMs: Double
+    /// Time-to-collision in seconds (nil if not closing / unknown).
+    var ttcSeconds: Float? = nil
+    /// Bearing to the hazard in degrees (+ = right), for directional cues.
+    var bearingDegrees: Float? = nil
 }

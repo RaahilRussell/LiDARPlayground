@@ -24,7 +24,7 @@ struct testApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            AppRootView()
                 .environment(ar)
                 .environment(perception)
                 .preferredColorScheme(.dark)

@@ -26,7 +26,12 @@ struct LiveAICameraView: View {
                                milestone: "Run on your iPhone 15 Pro Max for the live camera + YOLO segmentation.",
                                systemImage: "exclamationmark.triangle.fill")
             }
-            VStack { Spacer(); controls }.padding(10)
+            VStack(spacing: 8) {
+                if ar.supportsWorldTracking { detectionsBar }
+                Spacer()
+                controls
+            }
+            .padding(10)
         }
         .onAppear {
             if ar.runState == .idle { ar.start() }
@@ -67,18 +72,115 @@ struct LiveAICameraView: View {
 
     private func boxOverlay(_ obj: DetectedObject, in size: CGSize) -> some View {
         let rect = mapFill(obj.boxNormalized, imageAspect: 3.0 / 4.0, in: size)
+        let color = Self.classColor(for: obj.label)
+        let labelText = "\(obj.label) \(Int(obj.confidence * 100))%"
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 4)
-                .stroke(Theme.accent, lineWidth: 2)
+                .stroke(color, lineWidth: 2.5)
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
-            Text("\(obj.label) \(Int(obj.confidence * 100))%")
+            Text(labelText)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .padding(.horizontal, 4).padding(.vertical, 2)
-                .background(Theme.accent.opacity(0.85))
+                .background(color.opacity(0.9))
                 .foregroundStyle(.black)
-                .position(x: rect.minX + 40, y: max(8, rect.minY - 8))
+                .fixedSize()
+                // Anchor the label to the box's top-left, clamped on-screen.
+                .position(x: rect.minX + 44, y: max(10, rect.minY - 9))
         }
+    }
+
+    private struct ClassGroup: Identifiable {
+        var id: String { label }
+        let label: String
+        let count: Int
+        let conf: Float
+    }
+
+    /// Groups the current detections by class with count + top confidence.
+    private func detectionGroups() -> [ClassGroup] {
+        let objects = vision.latestResult?.objects ?? []
+        var map: [String: (count: Int, conf: Float)] = [:]
+        for o in objects {
+            let cur = map[o.label] ?? (0, 0)
+            map[o.label] = (cur.count + 1, Swift.max(cur.conf, o.confidence))
+        }
+        return map
+            .map { ClassGroup(label: $0.key, count: $0.value.count, conf: $0.value.conf) }
+            .sorted { $0.count == $1.count ? $0.conf > $1.conf : $0.count > $1.count }
+    }
+
+    /// Live readout of what the model currently sees, grouped by class.
+    private var detectionsBar: some View {
+        let groups = detectionGroups()
+        return Panel {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("DETECTING").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(groups.isEmpty ? "—" : "\(groups.count) classes")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                }
+                if groups.isEmpty {
+                    Text(modelStatusText)
+                        .font(.caption)
+                        .foregroundStyle(modelStatusIsError ? Theme.bad : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(groups) { g in
+                                HStack(spacing: 4) {
+                                    Circle().fill(Self.classColor(for: g.label)).frame(width: 8, height: 8)
+                                    Text(g.label).font(.system(size: 11, weight: .semibold))
+                                    if g.count > 1 {
+                                        Text("×\(g.count)").font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                    Text("\(Int(g.conf * 100))%")
+                                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 7).padding(.vertical, 4)
+                                .background(Self.classColor(for: g.label).opacity(0.2), in: Capsule())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Specific, actionable reason the overlay has no detections — never a vague
+    /// "model not running". Tells the user (and us) exactly what to fix.
+    private var modelStatusText: String {
+        switch vision.loadState {
+        case .loaded:
+            return ar.runState == .running ? "Model ready — point at people / objects…"
+                                            : "Session paused — tap Start on the Camera tab"
+        case .loading:
+            return "Loading \(vision.selectedVariant.displayName)…"
+        case .notLoaded:
+            return "Starting model…"
+        case .missing:
+            return "Model file not in this build — rebuild & reinstall (models live in test/Models)."
+        case .sdkUnavailable:
+            return "UltralyticsYOLO package not linked in this build — rebuild & reinstall."
+        case .failed(let message):
+            return "Model load failed: \(message)"
+        }
+    }
+
+    private var modelStatusIsError: Bool {
+        switch vision.loadState {
+        case .missing, .sdkUnavailable, .failed: return true
+        default: return false
+        }
+    }
+
+    /// Deterministic per-class color so each label keeps a stable, distinct hue.
+    static func classColor(for label: String) -> Color {
+        var hasher = Hasher(); hasher.combine(label)
+        let hue = Double(abs(hasher.finalize()) % 360) / 360.0
+        return Color(hue: hue, saturation: 0.75, brightness: 0.95)
     }
 
     /// Maps a normalized rect (origin top-left) through an aspect-FILL of a source

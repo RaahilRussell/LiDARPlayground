@@ -39,29 +39,32 @@ final class ProximityEvaluator {
     /// Evaluate one proximity input. `nearest`/`confidence` come from geometry.
     @discardableResult
     func evaluate(nearest: Float?, confidence: Float?, region: SpatialRegion?,
-                  label: String?, isSimulated: Bool, inputTimestamp: TimeInterval) -> ProximityEvent {
+                  label: String?, isSimulated: Bool, inputTimestamp: TimeInterval,
+                  ttc: Float? = nil, bearing: Float? = nil, inPath: Bool = true) -> ProximityEvent {
         let decidedAt = CACurrentMediaTime()
 
         // Decide target state (pure logic lives in ProximityStateMachine).
         machine.thresholds = ProximityThresholds(
             criticalDistance: criticalDistance, nearDistance: nearDistance,
             cautionDistance: cautionDistance, hysteresis: hysteresis, minConfidence: minConfidence)
-        if machine.step(nearest: nearest, confidence: confidence) {
+        if machine.step(nearest: nearest, confidence: confidence, ttc: ttc, inPath: inPath) {
             stateEnteredAt = decidedAt
         }
         currentState = machine.state
 
-        // Map state → pattern and enqueue (coordinator applies cooldown + priority).
+        // The pattern is recorded for the inspector; the actual graded haptic +
+        // audio output is produced continuously by FeedbackCoordinator.
         let pattern = Self.pattern(for: currentState)
-        var enqueuedAt: TimeInterval?
-        if let pattern { enqueuedAt = haptics.play(pattern) }
+        let enqueuedAt: TimeInterval? = nil
+        _ = haptics   // ownership kept for API compatibility; feedback is centralized
 
         let event = ProximityEvent(
             id: UUID(), state: currentState, distanceMeters: nearest, region: region,
             depthConfidence: confidence, triggeringLabel: label, isSimulated: isSimulated,
             inputTimestamp: inputTimestamp, decidedAt: decidedAt, hapticEnqueuedAt: enqueuedAt,
             patternName: pattern?.rawValue,
-            processingLatencyMs: (decidedAt - inputTimestamp) * 1000)
+            processingLatencyMs: (decidedAt - inputTimestamp) * 1000,
+            ttcSeconds: ttc, bearingDegrees: bearing)
 
         lastEvent = event
         recentEvents.insert(event, at: 0)

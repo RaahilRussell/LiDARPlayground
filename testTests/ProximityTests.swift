@@ -70,6 +70,18 @@ struct ProximityTests {
         #expect(state(after: [(0.4, 1), (nil, nil), (2.5, 1)]) == .clear)
     }
 
+    @Test func lateralPassByDoesNotBecomeTTCStopAlert() {
+        var m = ProximityStateMachine()
+        m.step(nearest: 0.8, confidence: 1, ttc: 0.8, inPath: false)
+        #expect(m.state == .caution, "side-by-side pass-by should stay a gentle spatial cue")
+    }
+
+    @Test func closingHazardInPathStillEscalates() {
+        var m = ProximityStateMachine()
+        m.step(nearest: 2.5, confidence: 1, ttc: 1.0, inPath: true)
+        #expect(m.state == .critical)
+    }
+
     @Test func customThresholdsAreHonoured() {
         var m = ProximityStateMachine(thresholds: ProximityThresholds(criticalDistance: 0.2, nearDistance: 0.4,
                                                                       cautionDistance: 0.6, hysteresis: 0.05,

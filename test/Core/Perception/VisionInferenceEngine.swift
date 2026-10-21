@@ -67,6 +67,10 @@ final class VisionInferenceEngine {
 
     #if canImport(UltralyticsYOLO)
     private var models: [ModelKey: YOLO] = [:]
+    /// In-flight loads. The SDK loads asynchronously; if we don't hold a strong
+    /// reference to the instance it can be deallocated and the completion never
+    /// fires — leaving the UI stuck on "Loading" forever.
+    private var pending: [ModelKey: YOLO] = [:]
     #endif
 
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
@@ -105,11 +109,13 @@ final class VisionInferenceEngine {
         #if canImport(UltralyticsYOLO)
         let key = currentKey
         if models[key] != nil { loadState = .loaded; return }
+        if pending[key] != nil { loadState = .loading; return }   // already loading this config
         loadState = .loading
         let loadStart = CACurrentMediaTime()
-        YOLO(variant.rawValue, task: .segment, useGpu: key.useGpu) { [weak self] result in
+        let instance = YOLO(variant.rawValue, task: .segment, useGpu: key.useGpu) { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
+                self.pending[key] = nil
                 switch result {
                 case .success(let model):
                     self.models[key] = model
@@ -120,6 +126,8 @@ final class VisionInferenceEngine {
                 }
             }
         }
+        // Retain the in-flight instance so its async load can actually finish.
+        pending[key] = instance
         #endif
     }
 

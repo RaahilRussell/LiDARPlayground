@@ -65,6 +65,8 @@ struct SensorsTabView: View {
 struct AIPerceptionTabView: View {
     var body: some View {
         TabView {
+            FusedPerceptionView()
+                .tabItem { Label("Fused", systemImage: "camera.metering.multispot") }
             LiveAICameraView()
                 .tabItem { Label("Live AI", systemImage: "camera.viewfinder") }
             DepthLabView()
