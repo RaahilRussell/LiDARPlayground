@@ -37,10 +37,33 @@ This is a prototype: none of these checks make it a navigation aid.
 - [ ] Demo: no vibration unless "Play haptics for demo transitions" is on; with it on, transitions vibrate.
 - [ ] Switching back to Live stops the demo and resumes live polling.
 
+## Wearer Mode navigation (📱)
+
+Hold the phone upright in portrait at chest height (or on a lanyard), screen facing you.
+Open Developer ▸ AI Perception ▸ Map to watch the map while a sighted helper walks.
+
+- [ ] `NavigationTests` pass in the Simulator (axes, floor, map, path scan, alert policy).
+- [ ] Start guidance: "Guidance started" is spoken; screen does not auto-lock while running.
+- [ ] Map tab: green floor cells appear ahead within ~2 s; "Phone height" reads 1.2–1.5 m.
+- [ ] Hallway ~2 m wide, walk the middle: level stays CLEAR, no vibration (old build: CRITICAL).
+- [ ] Walk past a chair 0.8 m to the side: no alert. Map shows it beside the corridor.
+- [ ] Walk at a pole or door edge: tap pulses; with "I use a long cane" ON it never goes above NOTICE and never speaks; OFF → WARNING then STOP with speech.
+- [ ] Overhanging object (open cabinet door, sign, branch, table edge) in the path: double taps, "Head/Chest/Waist height obstacle ahead…", then "Stop…" around 1–1.4 m at walking pace.
+- [ ] Walk up to a tall pole until it leaves the bottom of the frame: it stays amber (ground), never turns red.
+- [ ] Turn 90° after passing an obstacle: it stays on the map (out of view), then disappears ~20 s later.
+- [ ] Someone steps into the path then leaves: alert clears within ~1.5 s.
+- [ ] Stand still facing an obstacle: one pulse when the level rises, then silence.
+- [ ] Cover the LiDAR / point at the ceiling / point at the floor: after ~1 s the right warning is spoken once and a soft buzz repeats every 4 s; uncovering says "Sensing again."
+- [ ] Describe Surroundings: says ahead / left / right; unmapped directions are called "not mapped yet", never "open".
+- [ ] Map tab "Capture→decision" stays under ~150 ms; "Compute" under ~20 ms; thermal state over 10 minutes.
+- [ ] Haptics tab ▸ Wearer Mode vibration language: the six cues and the buzz are distinguishable without looking.
+
 ## Regression (📱)
 
 - [ ] Sensor tabs (Camera, Depth, Point Cloud, 3D Mesh, Data) behave as before.
-- [ ] Live AI, Depth Lab, Fusion, Haptics tabs behave as before; Haptic Lab simulated proximity still works.
+- [ ] Live AI, Depth Lab, Fusion, Haptics tabs behave as before.
+- [ ] Fusion tab: an object on the right of the screen shows a positive azimuth (was vertical angle before).
+- [ ] Inspector "Run spatial pipeline": LEFT/RIGHT occupancy follows left/right of the screen, not top/bottom.
 - [ ] Live AI rate slider now achieves close to the requested Hz (loop paces start-to-start).
 - [ ] Background/foreground resumes the AR session cleanly.
 

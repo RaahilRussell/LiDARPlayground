@@ -2,12 +2,10 @@
 //  ProximityStateMachine.swift
 //  test
 //
-//  Phase 9 — the pure proximity decision logic extracted from ProximityEvaluator
-//  so it can be fixture-tested and reused by the Inspector demo mode without
-//  touching shared live state or haptics. Behavior is identical to the Phase 5/6
-//  evaluator: geometry + confidence (never labels), immediate escalation, and
-//  hysteresis before de-escalating. Thresholds are test values, not safety
-//  standards.
+//  Phase 9 — the original proximity state machine. It now only drives the
+//  Inspector's synthetic demo mode; Wearer Mode decides alerts in AlertPolicy.
+//  Geometry + confidence (never labels), immediate escalation, and hysteresis
+//  before de-escalating. Thresholds are test values, not safety standards.
 //
 
 nonisolated struct ProximityThresholds: Equatable, Sendable {

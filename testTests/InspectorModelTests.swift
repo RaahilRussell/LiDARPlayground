@@ -60,7 +60,7 @@ struct InspectorModelTests {
     @Test func latencyBreakdownUsesOnlyMeasuredValues() {
         let stages = LatencyBreakdown.stages(captureToResultMs: 60, endToEndMs: 40, preMs: 0, inferenceMs: 25,
                                              postMs: 5, fusionMs: nil, spatialMs: 12, depthRefineMs: nil,
-                                             proximityDecisionMs: nil, hapticEnqueueMs: nil)
+                                             navigationComputeMs: nil, captureToDecisionMs: nil)
         let byName = Dictionary(uniqueKeysWithValues: stages.map { ($0.name, $0.ms) })
         #expect(byName["Unattributed"] == .some(10))
         #expect(byName["Capture → inference start"] == .some(20))
@@ -69,12 +69,12 @@ struct InspectorModelTests {
 
         let idle = LatencyBreakdown.stages(captureToResultMs: nil, endToEndMs: nil, preMs: nil, inferenceMs: nil,
                                            postMs: nil, fusionMs: nil, spatialMs: nil, depthRefineMs: nil,
-                                           proximityDecisionMs: nil, hapticEnqueueMs: nil)
+                                           navigationComputeMs: nil, captureToDecisionMs: nil)
         #expect(idle.allSatisfy { $0.ms == nil }, "nothing running → nothing reported")
 
         let skew = LatencyBreakdown.stages(captureToResultMs: 30, endToEndMs: 20, preMs: 0, inferenceMs: 25,
                                            postMs: 1, fusionMs: nil, spatialMs: nil, depthRefineMs: nil,
-                                           proximityDecisionMs: nil, hapticEnqueueMs: nil)
+                                           navigationComputeMs: nil, captureToDecisionMs: nil)
         #expect(skew.first { $0.name == "Unattributed" }?.ms == 0, "clock skew is clamped, not negative")
     }
 }

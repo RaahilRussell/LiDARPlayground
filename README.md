@@ -9,6 +9,11 @@ Built with SwiftUI + ARKit + SceneKit + CoreVideo/CoreImage + simd. No third-par
 dependencies. Target device: **iPhone 15 Pro Max** (any LiDAR-equipped iPhone/iPad
 Pro works).
 
+**Wearer Mode** (the default screen) is the blind-user navigation prototype: LiDAR
+builds a short-term obstacle map and the app vibrates and speaks about obstacles in
+the walking path, prioritising the ones a long cane misses. Design, decisions and
+evidence: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ---
 
 ## Run instructions

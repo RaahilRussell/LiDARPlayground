@@ -2,11 +2,10 @@
 //  ProximityTests.swift
 //  testTests
 //
-//  Phase 9 — proximity state machine (thresholds, uncertainty, hysteresis) and
-//  the evaluator's bounded, labeled event history. Haptics are disabled here.
+//  Phase 9 — proximity state machine (thresholds, uncertainty, hysteresis) used
+//  by the Inspector demo.
 //
 
-import QuartzCore
 import Testing
 @testable import test
 
@@ -90,23 +89,5 @@ struct ProximityTests {
         #expect(m.state == .caution)
         m.step(nearest: 0.5, confidence: 0.8)
         #expect(m.state == .uncertain)
-    }
-
-    @Test func evaluatorHistoryIsBoundedAndLabeled() {
-        let haptics = HapticCoordinator()
-        haptics.enabled = false
-        let evaluator = ProximityEvaluator(haptics: haptics)
-        let now = CACurrentMediaTime()
-        for i in 0..<(ProximityEvaluator.maxRecentEvents + 15) {
-            evaluator.evaluate(nearest: Float(i % 3) + 0.3, confidence: 1, region: .center, label: nil,
-                               isSimulated: i.isMultiple(of: 2), inputTimestamp: now)
-        }
-        #expect(evaluator.recentEvents.count == ProximityEvaluator.maxRecentEvents)
-        #expect(evaluator.recentEvents.first?.id == evaluator.lastEvent?.id, "newest first")
-        #expect(evaluator.recentEvents.allSatisfy { $0.hapticEnqueuedAt == nil }, "haptics disabled → nothing enqueued")
-        #expect(evaluator.recentEvents.contains { $0.isSimulated } && evaluator.recentEvents.contains { !$0.isSimulated })
-
-        evaluator.reset()
-        #expect(evaluator.recentEvents.isEmpty && evaluator.currentState == .clear)
     }
 }

@@ -6,8 +6,8 @@
 //  mode. Each step is a pure function of its index (no clock, no randomness), so
 //  the same step always yields the same geometry and the whole sequence is
 //  fixture-tested. The synthetic geometry is pushed through the REAL occupancy
-//  algorithm and proximity state machine, but never through the shared live
-//  ProximityEvaluator, and it never drives haptics unless the user opts in.
+//  algorithm and this demo's own proximity state machine. It never touches
+//  Wearer Mode, and it never drives haptics unless the user opts in.
 //
 
 import Foundation
@@ -148,7 +148,7 @@ nonisolated enum ProximityInputSelector {
 }
 
 /// Runs the demo sequence through the real pure algorithms. Owns its own state
-/// machine so it can never disturb the live ProximityEvaluator.
+/// machine so it can never disturb Wearer Mode.
 nonisolated struct DemoStepOutput: Sendable {
     let frame: DemoFrame
     let occupancy: [RegionOccupancy]
@@ -185,5 +185,15 @@ nonisolated struct DemoRunner: Sendable {
     /// Demo events reach the Taptic Engine only with explicit opt-in.
     static func shouldPlayHaptic(stateChanged: Bool, optedIn: Bool) -> Bool {
         optedIn && stateChanged
+    }
+
+    static func pattern(for state: ProximityState) -> HapticPattern? {
+        switch state {
+        case .clear: return nil
+        case .caution: return .shortLight
+        case .near: return .twoPulseWarning
+        case .critical: return .criticalProximity
+        case .uncertain: return .uncertainty
+        }
     }
 }

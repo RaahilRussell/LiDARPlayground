@@ -6,6 +6,11 @@ package. Source lives in `test/`; Core ML models are in `test/Models/`.
 Current deployment target is iOS 26.5. Do not lower it or change signing/team
 settings just to satisfy a cloud build.
 
+Wearer Mode (blind-user navigation) lives in `test/Core/Navigation/`; every alert
+decision is in `AlertPolicy.swift`. Read `docs/ARCHITECTURE.md` before changing it.
+The app is portrait-only: ARKit camera +x is vertical in portrait, so never read
+left/right from camera x; use `UserFrame`.
+
 ## Cloud work
 
 - Work on a separate `claude/` branch, commit changes, and push the branch.

@@ -130,7 +130,9 @@ final class SpatialFusionEngine {
             let world: SIMD3<Float>? = frame.trackingIsNormal
                 ? { let w = frame.cameraTransform * SIMD4<Float>(cam, 1); return SIMD3(w.x, w.y, w.z) }()
                 : nil
-            let azimuth = atan2(cam.x, -cam.z) * 180 / .pi
+            // ARKit camera axes are fixed to the sensor: in portrait, camera +y is
+            // the user's right and camera x is vertical.
+            let azimuth = atan2(cam.y, -cam.z) * 180 / .pi
 
             // Region from horizontal box centre in the portrait display.
             let centerX = box.midX

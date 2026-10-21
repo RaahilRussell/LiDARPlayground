@@ -132,7 +132,10 @@ final class SpatialAlgorithmsEngine {
                         let xc = (Float(x) - cx) * d / fx
                         let yc = (Float(y) - cy) * d / fy
                         let cam = SIMD3<Float>(xc, -yc, -d)
-                        cameraPoints.append(cam)
+                        // Occupancy reads x as left/right and y as up. ARKit camera
+                        // axes are fixed to the sensor, so in portrait camera +y is
+                        // the user's right and camera −x is up: rotate into that view frame.
+                        cameraPoints.append(SIMD3<Float>(cam.y, -cam.x, cam.z))
                         confs.append(crow.map { Float($0[x]) / 2 } ?? 1)
                         if useWorld {
                             let w = T * SIMD4<Float>(cam, 1)

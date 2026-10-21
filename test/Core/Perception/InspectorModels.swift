@@ -146,7 +146,7 @@ nonisolated enum LatencyBreakdown {
     static func stages(captureToResultMs: Double?, endToEndMs: Double?, preMs: Double?,
                        inferenceMs: Double?, postMs: Double?, fusionMs: Double?,
                        spatialMs: Double?, depthRefineMs: Double?,
-                       proximityDecisionMs: Double?, hapticEnqueueMs: Double?) -> [LatencyStage] {
+                       navigationComputeMs: Double?, captureToDecisionMs: Double?) -> [LatencyStage] {
         var unattributed: Double?
         if let e2e = endToEndMs, let inf = inferenceMs {
             // Clamped: SDK and our clocks bracket slightly different spans.
@@ -167,9 +167,10 @@ nonisolated enum LatencyBreakdown {
             LatencyStage(name: "RGB+depth fusion", ms: fusionMs, note: "SpatialFusionEngine, last pass"),
             LatencyStage(name: "Spatial algorithms", ms: spatialMs, note: "floor/cluster/occupancy, last pass"),
             LatencyStage(name: "Depth refinement", ms: depthRefineMs, note: "Depth Lab filters, last pass"),
-            LatencyStage(name: "Proximity decision", ms: proximityDecisionMs, note: "input timestamp → decision"),
-            LatencyStage(name: "Decision → haptic enqueue", ms: hapticEnqueueMs,
-                         note: "nil when suppressed by cooldown or disabled"),
+            LatencyStage(name: "Navigation compute", ms: navigationComputeMs,
+                         note: "points → floor → map → path scan, last tick"),
+            LatencyStage(name: "Capture → alert decision", ms: captureToDecisionMs,
+                         note: "host clock − ARFrame.timestamp at the decision, last tick"),
         ]
     }
 }

@@ -74,10 +74,10 @@ struct PerceptionInspectorView: View {
                                                                    set: { inspector.previewsEnabled = $0 }))
                 Toggle("Run YOLO model", isOn: Binding(get: { inspector.runningModel },
                                                        set: { inspector.setModelRunning($0) }))
-                Toggle("Run spatial + proximity pipeline", isOn: Binding(
-                    get: { inspector.runningSpatialProximity },
-                    set: { inspector.setSpatialProximityRunning($0) }))
-                Text("The live proximity pipeline drives haptics when they are enabled in the Haptics tab (currently \(perception.haptics.enabled ? "ON" : "OFF")). Experimental prototype — not a navigation aid.")
+                Toggle("Run spatial pipeline (floor, occupancy)", isOn: Binding(
+                    get: { inspector.runningSpatial },
+                    set: { inspector.setSpatialRunning($0) }))
+                Text("Wearer Mode alert transitions are logged below while guidance runs (Map tab or Wearer Mode). Experimental prototype — not a navigation aid.")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -221,14 +221,14 @@ struct PerceptionInspectorView: View {
     private var latencyCard: some View {
         let p = perception
         let r = p.vision.latestResult
-        let event = p.proximity.lastEvent
+        let nav = p.navigation
         let stages = LatencyBreakdown.stages(
             captureToResultMs: r?.captureToResultMs, endToEndMs: r?.endToEndMs, preMs: r?.preprocessMs,
             inferenceMs: r?.inferenceMs, postMs: r?.postprocessMs,
             fusionMs: positive(p.fusion.lastFusionMs), spatialMs: positive(p.spatial.lastMs),
             depthRefineMs: positive(p.depth.lastProcessMs),
-            proximityDecisionMs: event?.processingLatencyMs,
-            hapticEnqueueMs: event.flatMap { e in e.hapticEnqueuedAt.map { ($0 - e.decidedAt) * 1000 } })
+            navigationComputeMs: nav.running ? nav.computeMs : nil,
+            captureToDecisionMs: nav.running ? nav.captureToDecisionMs : nil)
         return Panel {
             VStack(alignment: .leading, spacing: 4) {
                 header("LATENCY BREAKDOWN (last measured, ms)")
@@ -302,7 +302,7 @@ struct PerceptionInspectorView: View {
                 Toggle("Play haptics for demo transitions (opt-in)", isOn: Binding(
                     get: { inspector.demoHapticsOptIn }, set: { inspector.demoHapticsOptIn = $0 }))
                     .font(.footnote).tint(Theme.warn)
-                Text("Demo uses the real occupancy + proximity logic with its own state machine; it never feeds the live proximity evaluator, and it only vibrates with the opt-in above.")
+                Text("Demo uses the real occupancy + proximity logic with its own state machine; it never feeds Wearer Mode, and it only vibrates with the opt-in above.")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -321,7 +321,7 @@ struct PerceptionInspectorView: View {
                 }
                 let events = inspector.log.newestFirst
                 if events.isEmpty {
-                    Text("No events yet. Enable the spatial + proximity pipeline, or run the demo.")
+                    Text("No events yet. Enable the spatial pipeline, start guidance, or run the demo.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 ForEach(events.prefix(40)) { e in

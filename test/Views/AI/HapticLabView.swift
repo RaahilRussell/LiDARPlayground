@@ -3,19 +3,15 @@
 //  test
 //
 //  Phase 5 — manual haptic pattern testing (no camera needed), live parameter
-//  controls, a simulated-distance proximity tester, and an honest note about the
-//  single haptic actuator.
+//  controls, a preview of the Wearer Mode vibration language, and an honest note
+//  about the single haptic actuator.
 //
 
-import QuartzCore
 import SwiftUI
 
 struct HapticLabView: View {
     @Environment(PerceptionSystem.self) private var perception
     private var haptics: HapticCoordinator { perception.haptics }
-    private var proximity: ProximityEvaluator { perception.proximity }
-
-    @State private var simDistance: Float = 1.5
 
     var body: some View {
         ScrollView {
@@ -23,7 +19,7 @@ struct HapticLabView: View {
                 engineCard
                 patternLibrary
                 parameters
-                proximityTester
+                wearerLanguage
                 actuatorNote
             }
             .padding(12)
@@ -88,46 +84,39 @@ struct HapticLabView: View {
         }
     }
 
-    private var proximityTester: some View {
+    /// Plays exactly what Wearer Mode plays, from AlertPolicy's own cue table, so the
+    /// language can be learned and judged with users before walking with it.
+    private var wearerLanguage: some View {
         Panel {
             VStack(alignment: .leading, spacing: 8) {
-                Text("SIMULATED PROXIMITY (no camera)")
+                Text("WEARER MODE VIBRATION LANGUAGE")
                     .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                HStack {
-                    Text("Distance").font(.caption).foregroundStyle(.secondary)
-                    Slider(value: $simDistance, in: 0.1...3)
-                    Text(String(format: "%.2f m", simDistance)).font(Theme.mono).frame(width: 60)
-                }
-                HStack {
-                    Button("Send simulated obstacle") {
-                        proximity.evaluate(nearest: simDistance, confidence: 0.9, region: .center,
-                                           label: nil, isSimulated: true,
-                                           inputTimestamp: CACurrentMediaTime())
+                ForEach([ObstacleKind.ground, .overhead], id: \.self) { kind in
+                    HStack {
+                        Text(kind == .ground ? "Ground (tap)" : "Overhead (double tap)")
+                            .font(.caption).frame(width: 130, alignment: .leading)
+                        ForEach([AlertLevel.notice, .warning, .stop], id: \.self) { level in
+                            Button(level.title) {
+                                if let cue = HapticCue.obstacle(kind, level: level) { haptics.play(cue) }
+                            }
+                            .buttonStyle(.bordered).tint(Theme.accent).font(.caption2)
+                        }
                     }
-                    .buttonStyle(.borderedProminent).tint(Theme.accent)
-                    Spacer()
-                    stateBadge(proximity.currentState)
                 }
-                thresholdControls
-                Text("⚠︎ Simulated input — clearly separate from real sensor data.")
-                    .font(.system(size: 9)).foregroundStyle(Theme.warn)
+                HStack {
+                    Text("Cannot see (buzz)").font(.caption).frame(width: 130, alignment: .leading)
+                    Button("Play") { haptics.play(HapticCue.sensingLost) }
+                        .buttonStyle(.bordered).tint(Theme.accent).font(.caption2)
+                }
+                Text("While walking, pulses repeat every \(interval(.notice)) / \(interval(.warning)) / \(interval(.stop)) s. Standing still, only a rise in level pulses.")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private var thresholdControls: some View {
-        VStack(spacing: 6) {
-            slider("Caution ≤", Binding(get: { Double(proximity.cautionDistance) },
-                                        set: { proximity.cautionDistance = Float($0) }), 1...4,
-                   String(format: "%.1f", proximity.cautionDistance))
-            slider("Near ≤", Binding(get: { Double(proximity.nearDistance) },
-                                     set: { proximity.nearDistance = Float($0) }), 0.6...2.5,
-                   String(format: "%.1f", proximity.nearDistance))
-            slider("Critical ≤", Binding(get: { Double(proximity.criticalDistance) },
-                                         set: { proximity.criticalDistance = Float($0) }), 0.2...1.5,
-                   String(format: "%.1f", proximity.criticalDistance))
-        }
-        .tint(Theme.accent)
+    private func interval(_ level: AlertLevel) -> String {
+        String(format: "%.2g", HapticCue.interval(for: level))
     }
 
     private var actuatorNote: some View {
@@ -135,28 +124,10 @@ struct HapticLabView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Label("One actuator", systemImage: "iphone.radiowaves.left.and.right")
                     .font(.subheadline).foregroundStyle(Theme.accent)
-                Text("iPhone has a single Taptic Engine. It cannot physically output distinct left/right vibrations. Direction here is encoded only as deliberately different patterns, paired with on-screen text — this is NOT validated for navigation.")
+                Text("iPhone has a single Taptic Engine. It cannot physically output distinct left/right vibrations, so Wearer Mode speaks direction and uses vibration texture only for obstacle height. NOT validated for navigation.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        }
-    }
-
-    private func stateBadge(_ s: ProximityState) -> some View {
-        Text(s.rawValue)
-            .font(.system(size: 12, weight: .bold))
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(stateColor(s).opacity(0.25), in: Capsule())
-            .foregroundStyle(stateColor(s))
-    }
-
-    private func stateColor(_ s: ProximityState) -> Color {
-        switch s {
-        case .clear: return Theme.good
-        case .caution: return Theme.accent
-        case .near: return Theme.warn
-        case .critical: return Theme.bad
-        case .uncertain: return .gray
         }
     }
 

@@ -3,8 +3,8 @@
 //  test
 //
 //  Wearer Mode — the accessibility-first interface. Large, high-contrast,
-//  VoiceOver-friendly controls that work without visual attention. Spoken +
-//  haptic proximity guidance come from the shared perception pipeline.
+//  VoiceOver-friendly controls that work without visual attention. Haptic and
+//  spoken guidance come from NavigationEngine.
 //
 //  Experimental supplementary aid — NOT a validated mobility device.
 //
@@ -17,25 +17,24 @@ struct WearerModeView: View {
 
     var onSwitchMode: () -> Void
 
-    private var guidance: GuidanceEngine { perception.guidance }
-    private var speech: SpeechCoordinator { perception.speech }
+    private var navigation: NavigationEngine { perception.navigation }
     private var haptics: HapticCoordinator { perception.haptics }
-    private var proximity: ProximityEvaluator { perception.proximity }
 
     var body: some View {
         ZStack {
             stateColor.opacity(0.18).ignoresSafeArea()
-            VStack(spacing: 16) {
-                header
-                statusCard
-                startStopButton
-                describeButton
-                settings
-                readiness
-                disclaimer
-                Spacer()
+            ScrollView {
+                VStack(spacing: 16) {
+                    header
+                    statusCard
+                    startStopButton
+                    describeButton
+                    settings
+                    readiness
+                    disclaimer
+                }
+                .padding(18)
             }
-            .padding(18)
         }
     }
 
@@ -56,43 +55,57 @@ struct WearerModeView: View {
 
     // MARK: - Status
 
+    private var statusTitle: String {
+        guard navigation.running else { return "READY" }
+        return navigation.sensing == .ok ? navigation.decision.level.title : "NOT SENSING"
+    }
+
+    private var statusDetail: String {
+        guard navigation.running else { return "Stopped" }
+        guard navigation.sensing == .ok else { return navigation.sensing.rawValue }
+        guard let obstacle = navigation.decision.obstacle else { return "Path ahead clear" }
+        let name = AlertPolicy.name(of: obstacle, label: navigation.aheadLabel)
+        return "\(name), \(AlertPolicy.distancePhrase(obstacle.distance))"
+    }
+
     private var statusCard: some View {
         VStack(spacing: 6) {
-            Text(guidance.running ? proximity.currentState.rawValue : "READY")
+            Text(statusTitle)
                 .font(.system(size: 40, weight: .heavy, design: .rounded))
                 .foregroundStyle(stateColor)
-            Text(guidance.statusText)
+            Text(statusDetail)
                 .font(.headline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 20)
         .background(Theme.panel, in: RoundedRectangle(cornerRadius: 18))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status: \(guidance.running ? proximity.currentState.rawValue : "Ready"). \(guidance.statusText)")
+        .accessibilityLabel("Status: \(statusTitle). \(statusDetail)")
     }
 
     // MARK: - Primary controls
 
     private var startStopButton: some View {
         Button {
-            guidance.toggle()
+            navigation.toggle()
         } label: {
-            Label(guidance.running ? "Stop Guidance" : "Start Guidance",
-                  systemImage: guidance.running ? "stop.fill" : "play.fill")
+            Label(navigation.running ? "Stop Guidance" : "Start Guidance",
+                  systemImage: navigation.running ? "stop.fill" : "play.fill")
                 .font(.title.bold())
                 .frame(maxWidth: .infinity, minHeight: 90)
         }
         .buttonStyle(.borderedProminent)
-        .tint(guidance.running ? Theme.bad : Theme.good)
-        .accessibilityHint(guidance.running
-            ? "Stops camera sensing and spoken warnings."
-            : "Starts camera sensing, spoken and haptic proximity warnings.")
+        .tint(navigation.running ? Theme.bad : Theme.good)
+        .accessibilityHint(navigation.running
+            ? "Stops sensing and warnings."
+            : "Starts sensing. Warnings come as vibration, and speech for obstacles your cane can miss.")
     }
 
     private var describeButton: some View {
         Button {
-            guidance.describeSurroundings()
+            navigation.describeSurroundings()
         } label: {
             Label("Describe Surroundings", systemImage: "speaker.wave.2.fill")
                 .font(.title3.bold())
@@ -100,27 +113,28 @@ struct WearerModeView: View {
         }
         .buttonStyle(.bordered)
         .tint(Theme.accent)
-        .disabled(!guidance.running)
-        .accessibilityHint("Speaks the nearest obstacles and open directions around you.")
+        .disabled(!navigation.running)
+        .accessibilityHint("Speaks what is ahead and how far it is open to the left and right.")
     }
 
     // MARK: - Settings
 
     private var settings: some View {
-        VStack(spacing: 10) {
-            Picker("Verbosity", selection: Binding(
-                get: { guidance.verbosity }, set: { guidance.verbosity = $0 })) {
-                ForEach(GuidanceEngine.Verbosity.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Speech verbosity")
-
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("I use a long cane", isOn: Binding(
+                get: { navigation.profile.caneUser }, set: { navigation.profile.caneUser = $0 }))
+            Text(navigation.profile.caneUser
+                 ? "Ground-level obstacles get only a light tap, since your cane finds them. Waist-, chest- and head-height obstacles get full warnings."
+                 : "All obstacles in your path get full warnings.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle("Spoken warnings", isOn: Binding(
-                get: { speech.enabled }, set: { speech.enabled = $0 }))
-            Toggle("Haptic warnings", isOn: Binding(
-                get: { haptics.enabled }, set: { haptics.enabled = $0 }))
-            Toggle("Directional audio (use earbuds)", isOn: Binding(
-                get: { guidance.spatialCue.enabled }, set: { guidance.spatialCue.enabled = $0 }))
+                get: { navigation.profile.speech }, set: { navigation.profile.speech = $0 }))
+            Toggle("Vibration warnings", isOn: Binding(
+                get: { navigation.profile.haptics }, set: { navigation.profile.haptics = $0 }))
+            Toggle("Name objects (uses more battery)", isOn: Binding(
+                get: { navigation.identifyObjects }, set: { navigation.identifyObjects = $0 }))
+                .disabled(navigation.running)
         }
         .padding(14)
         .background(Theme.panel, in: RoundedRectangle(cornerRadius: 14))
@@ -151,7 +165,7 @@ struct WearerModeView: View {
     }
 
     private var disclaimer: some View {
-        Text("Experimental aid. Does not replace a cane, guide dog, or your own judgment.")
+        Text("Experimental aid. Does not replace a cane, guide dog, or your own judgment. Does not detect steps, curbs or drop-offs.")
             .font(.caption2)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
@@ -159,13 +173,13 @@ struct WearerModeView: View {
     }
 
     private var stateColor: Color {
-        guard guidance.running else { return Theme.accent }
-        switch proximity.currentState {
+        guard navigation.running else { return Theme.accent }
+        guard navigation.sensing == .ok else { return .gray }
+        switch navigation.decision.level {
         case .clear: return Theme.good
-        case .caution: return Theme.accent
-        case .near: return Theme.warn
-        case .critical: return Theme.bad
-        case .uncertain: return .gray
+        case .notice: return Theme.accent
+        case .warning: return Theme.warn
+        case .stop: return Theme.bad
         }
     }
 }

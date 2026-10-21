@@ -190,23 +190,3 @@ nonisolated enum ProximityState: String, Sendable, CaseIterable {
     case critical = "CRITICAL"
     case uncertain = "UNCERTAIN"
 }
-
-/// A single proximity decision, fully instrumented for the event inspector.
-nonisolated struct ProximityEvent: Identifiable, Sendable {
-    let id: UUID
-    var state: ProximityState
-    var distanceMeters: Float?
-    var region: SpatialRegion?
-    var depthConfidence: Float?
-    var triggeringLabel: String?       // may be nil — geometry alone can trigger
-    var isSimulated: Bool              // Training/Demo mock vs real sensor
-    var inputTimestamp: TimeInterval
-    var decidedAt: TimeInterval
-    var hapticEnqueuedAt: TimeInterval?
-    var patternName: String?
-    var processingLatencyMs: Double
-    /// Time-to-collision in seconds (nil if not closing / unknown).
-    var ttcSeconds: Float? = nil
-    /// Bearing to the hazard in degrees (+ = right), for directional cues.
-    var bearingDegrees: Float? = nil
-}

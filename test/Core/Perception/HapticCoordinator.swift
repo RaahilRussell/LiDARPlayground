@@ -42,7 +42,6 @@ final class HapticCoordinator {
     var sharpness: Float = 0.5
     var pulseDuration: Double = 0.08
     var repetitionInterval: Double = 0.18
-    var minWarningDistance: Float = 1.5     // used by ProximityEvaluator config UI
     var cooldown: Double = 0.4
 
     private(set) var supportsHaptics: Bool = CHHapticEngine.capabilitiesForHardware().supportsHaptics
@@ -116,20 +115,31 @@ final class HapticCoordinator {
         }
     }
 
-    /// Immediate single transient with NO cooldown/priority — the graded proximity
-    /// pulse train controls its own cadence, so it bypasses the discrete-event gate.
-    func pulse(intensity: Float, sharpness: Float) {
+    /// Plays one Wearer Mode cue immediately. AlertPolicy owns the cadence, so this
+    /// bypasses the pattern library's cooldown/priority gate.
+    func play(_ cue: HapticCue) {
         guard enabled, supportsHaptics, let engine else { return }
+        let parameters = [
+            CHHapticEventParameter(parameterID: .hapticIntensity, value: max(0, min(1, cue.intensity))),
+            CHHapticEventParameter(parameterID: .hapticSharpness, value: max(0, min(1, cue.sharpness)))
+        ]
+        let events: [CHHapticEvent]
+        switch cue.texture {
+        case .tap:
+            events = [CHHapticEvent(eventType: .hapticTransient, parameters: parameters, relativeTime: 0)]
+        case .doubleTap:
+            events = [CHHapticEvent(eventType: .hapticTransient, parameters: parameters, relativeTime: 0),
+                      CHHapticEvent(eventType: .hapticTransient, parameters: parameters, relativeTime: 0.09)]
+        case .buzz:
+            events = [CHHapticEvent(eventType: .hapticContinuous, parameters: parameters,
+                                    relativeTime: 0, duration: 0.35)]
+        }
         do {
-            let event = CHHapticEvent(eventType: .hapticTransient, parameters: [
-                CHHapticEventParameter(parameterID: .hapticIntensity, value: max(0, min(1, intensity))),
-                CHHapticEventParameter(parameterID: .hapticSharpness, value: max(0, min(1, sharpness)))
-            ], relativeTime: 0)
-            let pattern = try CHHapticPattern(events: [event], parameters: [])
+            let pattern = try CHHapticPattern(events: events, parameters: [])
             let player = try engine.makePlayer(with: pattern)
             try player.start(atTime: 0)
         } catch {
-            engineState = "pulse failed: \(error.localizedDescription)"
+            engineState = "cue failed: \(error.localizedDescription)"
         }
     }
 

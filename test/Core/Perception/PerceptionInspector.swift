@@ -5,11 +5,11 @@
 //  Phase 8 — drives the Inspector tab. Two strictly separated sources:
 //   • LIVE: polls the shared ARSession via ARSensorProvider (~4 Hz), reduces each
 //     frame to metadata + small previews off the main actor (single in flight),
-//     and logs spatial/proximity transitions from the live engines.
+//     and logs spatial changes and Wearer Mode alert transitions.
 //   • DEMO: a deterministic synthetic scenario (DemoScenario) run through the
-//     real occupancy + proximity logic with its OWN state machine. It never
-//     feeds the live ProximityEvaluator and only reaches the Taptic Engine when
-//     the user explicitly opts in. Demo output is always labeled DEMO.
+//     real occupancy logic with its OWN state machine. It never feeds Wearer
+//     Mode and only reaches the Taptic Engine when the user explicitly opts in.
+//     Demo output is always labeled DEMO.
 //
 //  Memory: no SensorFrame/ARFrame or pixel buffer is stored on this object; the
 //  analysis task holds one snapshot only while it runs. History is bounded.
@@ -53,7 +53,6 @@ final class PerceptionInspector {
     // inspector stops or switches to demo; anything already running is left as is.
     @ObservationIgnored private var ownsModel = false
     @ObservationIgnored private var ownsSpatial = false
-    @ObservationIgnored private var ownsDriver = false
 
     // Demo
     private(set) var demoRunning = false
@@ -71,8 +70,7 @@ final class PerceptionInspector {
     @ObservationIgnored private var lastTrackingNormal: Bool?
     @ObservationIgnored private var lastOccupancy: [RegionOccupancy] = []
     @ObservationIgnored private var lastFloorPresent: Bool?
-    @ObservationIgnored private var lastProximityEventId: UUID?
-    @ObservationIgnored private var lastLoggedLiveState: ProximityState?
+    @ObservationIgnored private var lastNavigationTransitionId: UUID?
     @ObservationIgnored private var lastDemoOccupancy: [RegionOccupancy] = []
 
     func attach(provider: ARSensorProvider, system: PerceptionSystem) {
@@ -129,10 +127,7 @@ final class PerceptionInspector {
     // MARK: - Live pipelines
 
     var runningModel: Bool { system?.vision.isEnabled ?? false }
-    var runningSpatialProximity: Bool {
-        guard let system else { return false }
-        return system.spatial.isRunning && system.proximityDriver.running
-    }
+    var runningSpatial: Bool { system?.spatial.isRunning ?? false }
 
     /// Explicit user toggle. Starting claims ownership only if it wasn't already running.
     func setModelRunning(_ on: Bool) {
@@ -147,24 +142,21 @@ final class PerceptionInspector {
         }
     }
 
-    func setSpatialProximityRunning(_ on: Bool) {
-        guard let system, on != runningSpatialProximity else { return }
+    func setSpatialRunning(_ on: Bool) {
+        guard let system, on != runningSpatial else { return }
         if on {
             guard source == .live else { return }
-            if !system.spatial.isRunning { system.spatial.start(); ownsSpatial = true }
-            if !system.proximityDriver.running { system.proximityDriver.start(); ownsDriver = true }
+            system.spatial.start()
+            ownsSpatial = true
         } else {
-            system.proximityDriver.stop()
             system.spatial.stop()
             ownsSpatial = false
-            ownsDriver = false
         }
     }
 
     private func releaseOwnedPipelines() {
         guard let system else { return }
         if ownsModel { system.vision.stop(); ownsModel = false }
-        if ownsDriver { system.proximityDriver.stop(); ownsDriver = false }
         if ownsSpatial { system.spatial.stop(); ownsSpatial = false }
     }
 
@@ -190,7 +182,7 @@ final class PerceptionInspector {
         }
 
         logSpatialChanges(system.spatial, at: now)
-        logProximity(system.proximity)
+        logNavigation(system.navigation)
     }
 
     /// Runs the pixel work off the main actor; the snapshot is released afterwards.
@@ -208,7 +200,7 @@ final class PerceptionInspector {
     }
 
     private func logSpatialChanges(_ spatial: SpatialAlgorithmsEngine, at now: TimeInterval) {
-        guard runningSpatialProximity else { return }
+        guard runningSpatial else { return }
         for change in OccupancyDiff.changes(previous: lastOccupancy, current: spatial.occupancy) where change.from != nil {
             log.append(origin: .live, kind: .occupancy,
                        message: "\(change.region.rawValue.uppercased()): \(change.from!.rawValue) → \(change.to.rawValue)",
@@ -224,17 +216,17 @@ final class PerceptionInspector {
         lastFloorPresent = floorPresent
     }
 
-    private func logProximity(_ proximity: ProximityEvaluator) {
-        guard let event = proximity.lastEvent, event.id != lastProximityEventId else { return }
-        lastProximityEventId = event.id
-        guard event.state != lastLoggedLiveState else { return }
-        lastLoggedLiveState = event.state
-        let distance = event.distanceMeters.map { String(format: "%.2f m", $0) } ?? "no distance"
-        let haptic = event.hapticEnqueuedAt != nil ? (event.patternName ?? "haptic") : "no haptic"
-        let prefix = event.isSimulated ? "[simulated input] " : ""
-        log.append(origin: .live, kind: .proximity,
-                   message: "\(prefix)\(event.state.rawValue) · \(distance) · \(event.region?.rawValue ?? "—") · \(haptic)",
-                   at: event.decidedAt, latencyMs: event.processingLatencyMs)
+    /// Logs every Wearer Mode transition since the last poll, oldest first.
+    private func logNavigation(_ navigation: NavigationEngine) {
+        let fresh = navigation.transitions.prefix { $0.id != lastNavigationTransitionId }
+        for t in fresh.reversed() {
+            let state = t.sensing == .ok ? t.level.title : t.sensing.rawValue
+            let obstacle = t.obstacle.map { String(format: "%@ %.2f m", $0.kind.rawValue, $0.distance) } ?? "no obstacle"
+            let spoken = t.spoken.map { " · “\($0)”" } ?? ""
+            log.append(origin: .live, kind: .proximity, message: "\(state) · \(obstacle)\(spoken)",
+                       at: t.at, latencyMs: t.captureToDecisionMs)
+        }
+        if let newest = navigation.transitions.first { lastNavigationTransitionId = newest.id }
     }
 
     // MARK: - Demo
@@ -279,7 +271,7 @@ final class PerceptionInspector {
         guard out.stateChanged else { return }
         var message = "\(out.state.rawValue) · \(out.input.map { String(format: "%.2f m", $0) } ?? "no valid depth") · step \(out.frame.step)"
         if DemoRunner.shouldPlayHaptic(stateChanged: out.stateChanged, optedIn: demoHapticsOptIn),
-           let pattern = ProximityEvaluator.pattern(for: out.state),
+           let pattern = DemoRunner.pattern(for: out.state),
            system?.haptics.play(pattern) != nil {
             message += " · haptic (opt-in): \(pattern.rawValue)"
         } else {
