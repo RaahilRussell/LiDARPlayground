@@ -109,6 +109,21 @@ struct TextRecognitionTests {
         #expect(throws: MapStorageError.self) { try text.validate() }
     }
 
+    @Test func exportedDataSeparatesSignsAndOmitsImageBytes() throws {
+        var text = annotation(position: nil)
+        text.evidenceJPEG = Data([1, 2, 3])
+        let sign = SavedDirectionalSignage(textAnnotationID: text.id, text: text.text, direction: .left,
+            arrowBounds: text.bounds, confidence: 0.8, source: .recognizedGlyph, lastSeen: text.lastSeen)
+        let encoded = try TextObservationExport.encode(annotations: [text], signage: [sign])
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let texts = try #require(object["textAnnotations"] as? [[String: Any]])
+        let signs = try #require(object["directionalSignage"] as? [[String: Any]])
+        #expect(texts.count == 1 && signs.count == 1)
+        #expect(texts[0]["evidenceJPEG"] == nil)
+        #expect(signs[0]["direction"] as? String == "left")
+        #expect(signs[0]["textAnnotationID"] as? String == text.id.uuidString)
+    }
+
     private func annotation(position: MapPosition?) -> SavedTextAnnotation {
         let now = Date(timeIntervalSince1970: 1_000)
         return SavedTextAnnotation(text: "Restroom", confidence: 0.9,

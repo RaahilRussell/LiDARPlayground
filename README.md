@@ -2,9 +2,9 @@
 
 An educational **mapping and sensor laboratory** for the iPhone's LiDAR scanner,
 camera, and motion tracking. Map and save places automatically, revisit their
-camera-coloured surfaces and photos in 3D, or return in person to relocalize and
-follow a previously walked path. Local text recognition retains signs and text
-observations alongside each map. The app
+camera-coloured surfaces in 3D and captured photos in a gallery, or return in
+person to relocalize and follow a previously walked path. Local text recognition
+retains signs and text observations alongside each map. The app
 also contains developer diagnostics and experimental assistive feedback; it is
 not a production navigation app.
 
@@ -62,12 +62,15 @@ existing **Developer** tools.
    spoken turn guidance. Keep the phone facing the direction of travel. Routing
    follows continuous recorded paths; tracking gaps, large jumps, and height
    changes break continuity. It cannot invent a route through unvisited space,
-   join separate segments, confirm obstacle clearance, or replace a mobility aid.
+   join disconnected paths or separate places, confirm obstacle clearance, or
+   replace a mobility aid.
 6. Open **Text & Signs** to inspect local OCR observations, their image evidence,
    and detected arrow symbols or shapes. OCR runs at approximately one frame per
    second while mapping is active. Reliable depth places a text mark in the map;
    otherwise it remains an image observation. A sign arrow describes its image,
    not a verified world bearing, floor change, or walkable route.
+   **Export text & directions** opens the share sheet for JSON containing
+   separate text and directional-sign records, without embedding their photos.
 
 Each saved place contains a securely archived `ARWorldMap`, independent copied
 triangle geometry and vertex colours, calibrated JPEG keyframes, the camera
@@ -76,13 +79,18 @@ photo when available, and versioned metadata. Files stay in local Application
 Support; colour sampling and OCR run on device. Writes commit a complete revision
 before replacing the manifest, so a failed save preserves the previous version.
 
-Long scans automatically checkpoint and continue in a new segment before the
-working mesh, path, image, or text budget fills. A segment has its own coordinate
-space and its own localization map; shared place metadata groups related
-segments but does not align their geometry or connect their paths. Failed
-segment saves pause continuation and retain the current scan for retry. Existing
-uncoloured saved maps remain readable. Missing surfaces and grey colour samples
-remain unknown observations.
+Long scans automatically checkpoint and continue in a new storage segment before
+the working mesh, image, or text budget fills. Tracking retains the same origin,
+and the latest segment keeps the continuous recorded paths and destination
+labels. Mesh reconstruction starts a new chunk collection; older segment files
+remain individually viewable rather than being stitched into one offline scene.
+Open the latest segment to restore the latest route graph. **New Map**, or a new
+place after failed launch recognition, starts a separate origin and route graph.
+When path recording reaches its own capacity, it stops adding nodes while
+mapping and existing destinations remain available. Failed segment saves pause
+continuation and retain the current scan for retry. Existing uncoloured saved
+maps remain readable. Missing surfaces and grey colour samples remain unknown
+observations.
 
 See the [implementation plan](docs/MAPPING_PLAN.md),
 [architecture review](docs/MAPPING_ARCHITECTURE.md), and
@@ -113,7 +121,8 @@ sheet so you can AirDrop/save to your Mac:
 - `camera_poses.csv` — pose samples (position + quaternion)
 - `point_cloud.ply` — sampled RGB point cloud (opens in MeshLab, Blender, etc.)
 
-Recording only happens on an explicit tap — never continuously.
+This three-second diagnostic export recording starts only on an explicit tap.
+Automatic mapping, camera keyframes, and local OCR are separate foreground features.
 
 ---
 
@@ -193,11 +202,12 @@ point_world = camera.transform * point_cam  // world space
 - [ ] Coloured objects match the saved surface and gallery; occluded surfaces
       do not inherit foreground colours; missing confidence leaves grey areas.
 - [ ] Label two locations along a walked route, follow directions both ways,
-      and confirm a tracking gap or separate map segment does not create a shortcut.
+      and confirm a tracking gap or separate new map does not create a shortcut.
 - [ ] Text and arrow evidence matches the sign; text without reliable depth
       has no invented world marker; OCR runs locally with networking unavailable.
 - [ ] Force a segment rollover and a save failure; earlier segments and all
-      current photos/text survive, and continuation waits for a successful save.
+      current photos/text survive, existing destinations remain connected, retired
+      meshes do not refill colour sampling, and continuation waits for a successful save.
 
 ---
 

@@ -2,7 +2,8 @@ import Foundation
 import ImageIO
 
 /// A calibrated camera observation. JPEG pixels and intrinsics use the native
-/// sensor orientation (EXIF up), not a cropped or rotated screen preview.
+/// sensor orientation, not a cropped or rotated screen preview. JPEG EXIF
+/// orientation records how to present those native pixels upright to the user.
 /// Matrix arrays are column-major; the pose maps camera coordinates to world.
 nonisolated struct SavedMapKeyframe: Codable, Identifiable, Sendable, Equatable {
     var id: UUID
@@ -33,7 +34,8 @@ nonisolated struct SavedMapKeyframe: Codable, Identifiable, Sendable, Equatable 
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
               let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
-              width.intValue == imageWidth, height.intValue == imageHeight else {
+              width.intValue == imageWidth, height.intValue == imageHeight,
+              [1, 3, 6, 8].contains((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1) else {
             throw MapStorageError.invalidGeometry("camera image dimensions or format do not match")
         }
     }

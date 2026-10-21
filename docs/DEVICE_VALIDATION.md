@@ -6,6 +6,86 @@ results are recorded below. Physical checks still require a LiDAR iPhone/iPad
 and, for profiling/installing, a Mac with Xcode 26.5. This is a prototype:
 simulator results do not establish navigation safety.
 
+## Automatic mapping, color, navigation, and OCR follow-up
+
+This follow-up adds continuous foreground checkpoints, color/keyframe capture,
+visited-path navigation, and local OCR/signage. The earlier build/test results
+below remain evidence for their named commits only. **Apple compilation and
+simulator results for this follow-up are pending** at the time this checklist
+was added. The new source has been reviewed and parsed locally; that does not
+establish successful Apple SDK compilation or physical sensor behavior. See
+[AUTOMATIC_MAPPING_ARCHITECTURE.md](AUTOMATIC_MAPPING_ARCHITECTURE.md) for the
+implemented lifecycle, segment, route, and image-evidence boundaries.
+
+- [ ] Record the follow-up code commit and GitHub macOS run here after the
+      unsigned iPhone build and all simulator tests finish. Include the actual
+      number of tests/suites and any compiler warnings; do not reuse the earlier
+      77-test count as evidence for these new features.
+- [ ] On iPhone 15 Pro Max/iOS 26.5+, launch with an empty library. Without any
+      Start or Save tap, verify the camera maps, the first usable map saves,
+      and later updates checkpoint about every 20 seconds when tracking permits.
+      Confirm the screen remains awake while mapping and normal automatic sleep
+      returns on pause/background.
+- [ ] Open Saved Places, an offline place, Text & Signs, Assist, and Developer.
+      Verify automatic capture remains active, no second ARSession/capture
+      session starts, and library refresh does not interrupt saving.
+- [ ] Pause explicitly, background/foreground and lock/unlock; the camera must
+      remain paused until Resume. Repeat while a map is loading or an automatic
+      save is pending. An inactive launch/load must not start camera capture.
+- [ ] Relaunch in the last saved room and match its reference view. Verify
+      restored geometry/labels/text wait for recognition. Relaunch elsewhere:
+      after the automatic recognition timeout, a separate new place must start
+      while the original remains intact. An explicitly selected revisit must
+      remain actionable rather than silently replacing its target.
+- [ ] Revisit another place while a ready scan has new data. Verify the current
+      scan checkpoints first; force a write failure and verify revisit is
+      aborted. With tracking unavailable, verify the UI explains the unsaved
+      remainder that will be replaced before switching.
+- [ ] Force each storage-segment threshold in a debug build: mesh usage, photos,
+      and text evidence. Verify reconstruction/photo/text intake briefly freezes,
+      while camera/IMU/depth and path recording continue. After the commit, only
+      reconstruction resets: origin, labels, full graph and active route must
+      survive. Old mesh anchors must not leak into the new file or color cache.
+      Separately fill the navigation graph; only new path recording should stop.
+      Pause/background during commit; completion must not unexpectedly restart
+      the camera. Force disk failure and verify the final immutable capture and
+      last durable revision remain available for retry.
+- [ ] Scan colored walls and small objects from multiple angles. Compare saved
+      colors with the real surfaces; an object in front of a wall must not paint
+      its color onto the wall. Confirm unobserved/low-confidence vertices remain
+      uncolored. Revisit and save again; prior valid colors/photos must persist.
+- [ ] Inspect keyframes in portrait and both landscape orientations. Check
+      image dimensions, calibrated projection, gallery ordering, and capture
+      times. Old uncolored archives must still open, and malformed photo/color
+      payloads must fail without corrupting the previous saved revision.
+- [ ] Walk a connected room/corridor path and label several destinations. Follow
+      turns/distance to each label and Return to Start, both before the first
+      save and after a saved-place revisit. Verify exact arrival behavior near
+      bends and that close parallel corridors are never joined through a wall.
+- [ ] Lose tracking, leave the path, move between floors, point the camera away,
+      obscure forward depth, and place an obstacle on the recorded route. Verify
+      directions stop or report uncertainty rather than announcing clearance.
+      Test speech mute/Stop and switching between route and Assist guidance.
+- [ ] Show printed text and arrows in portrait/landscape, at different distances,
+      in low light, and against reflective surfaces. Check about 1 OCR update per
+      second without accumulating workers. Verify text and arrow boxes align
+      with their own image, and no-depth text has no invented world position.
+- [ ] Show identical words on distinct signs, return to a previously seen sign,
+      and rotate the phone without moving. Verify deduplication preserves the
+      physical distinction while repeated sightings update the existing mark.
+      Reset/revisit while OCR is running; old results must not enter the new map.
+- [ ] Force-quit/relaunch, then inspect saved text/sign evidence, photo gallery,
+      labels, and graph paths offline. Verify arrows remain image-relative
+      observations and never create a walking route or inferred floor change.
+- [ ] Delete the active saved file. Verify mapping pauses and explains how
+      Resume saves the retained scan under a new entry, rather than immediately
+      recreating the deleted place. Delete an inactive entry without stopping
+      the current mapping session.
+- [ ] Profile 30 minutes of mapping with OCR/color/path recording and several
+      saves. Record device temperature, memory peak during serialization, battery
+      use, frame cadence, and recovery after a phone call. No physical-device
+      performance or navigation-safety acceptance is claimed until these pass.
+
 ## New mapping changes: validation status
 
 The mapping change was authored on Windows, where Swift syntax parsing and

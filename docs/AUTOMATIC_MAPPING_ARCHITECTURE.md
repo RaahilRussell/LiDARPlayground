@@ -43,22 +43,41 @@ current unsaved remainder after the UI's confirmation.
 
 The runtime and decoder retain per-segment bounds. Geometry approaches rollover
 at 70% of its 750,000-vertex, 1,500,000-triangle, or 2,000-anchor limits; estimates
-include disjoint restored chunks. Photo, navigation, and text controllers also
-request rollover before their respective hard caps. A segment can hold at most
-48 calibrated photos/32 MiB of photo data, 20,000 navigation nodes/40,000 edges,
+include disjoint restored chunks. Photo and text controllers also request
+rollover before their respective hard caps. A segment can hold at most
+48 calibrated photos/32 MiB of photo data, 20,000 navigation nodes/40,000 edges
+and 100 destination labels,
 20,000 text observations and signs each, and 48 MiB of combined text/sign image
 evidence. The encoded geometry envelope is bounded to 256 MiB. These bounds
 protect in-memory work and decoding, not the number of saved places on disk.
 
-For rollover, the coordinator freezes photo/path/text intake, copies a final
-valid geometry snapshot, pauses the same ARSession, and commits the archive.
-Only a successful durable save permits a new origin and consumer reset. Failed
-saves preserve the prior durable revision and the current in-memory capture.
+For rollover, the coordinator freezes photo/text intake, copies a final valid
+geometry snapshot, temporarily disables only scene reconstruction, and commits
+the archive. The same camera/IMU/depth session and path recording continue.
+The final immutable capture remains in memory if writing fails; automatic
+mapping then pauses visibly and Resume retries that capture. Only a successful
+durable save permits reconstruction/photo/text caches to rotate.
+
+Reconstruction restarts using `resetSceneReconstruction`, without `resetTracking`
+or `removeExistingAnchors`. Apple specifies that this option removes the mesh
+anchors; tracking coordinates and the saved-place origin marker are retained.
+Fresh frame timestamps and post-reset mesh-anchor admission prevent old chunks
+from being captured into the new file. [Apple's resetSceneReconstruction reference](https://developer.apple.com/documentation/arkit/arsession/runoptions/resetscenereconstruction)
+
 The next file has a new ID, a shared logical `placeID`, and a new `segmentIndex`.
-It has a separate coordinate system and route start. Segments are not globally
-aligned, stitched, or connected by invented navigation edges. They appear as
-individual library entries. A sudden size jump beyond a hard cap can require
-manual recovery; no decoder or save path silently truncates meshes or photos.
+It keeps the same world coordinates, complete navigation graph, labels, and
+active route. Every later checkpoint includes the graph's newest nodes, so path
+samples recorded during a file write are not discarded. At navigation capacity,
+only new path recording stops with a visible explanation; existing routes and
+camera/color/OCR work remain available. Explicit New Map or a different-place
+restore changes the origin and cannot bridge unrelated graphs.
+
+Segments appear as individual library entries. Their mesh/photo/text payloads
+are not automatically combined into one offline scene, even when their world
+coordinates match. A sudden size jump beyond a hard cap can require manual
+recovery; no decoder or save path silently truncates meshes or photos. Deleting
+the active saved file pauses mapping to avoid silently recreating it; Resume
+can save the retained live scan as a new entry.
 
 The 6,000-point display trail is a bounded visualization. It is independent of
 the navigation graph, whose visited nodes and labels persist separately.
@@ -74,7 +93,9 @@ mesh vertex ordering. Unseen vertices remain visibly uncolored.
 
 Camera keyframes are separate JPEG observations with their world pose,
 intrinsics, dimensions, and capture time. They retain native sensor orientation;
-the longest side is reduced to 1,024 pixels and intrinsics scale with it. A new
+the longest side is reduced to 1,024 pixels and intrinsics scale with it.
+JPEG EXIF metadata records the capture orientation so the gallery presents an upright
+image without rotating its calibrated pixel coordinates. A new
 view is eligible after six seconds and sufficient camera translation or
 rotation. This is sampled photographic coverage, not full-resolution video or
 a texture atlas. The offline viewer offers captured vertex colors, surfaces,
@@ -96,7 +117,7 @@ distance, with optional speech. It pauses directions on tracking loss, leaving
 the recorded path, an observed obstruction, or unavailable forward depth. The
 camera must face the direction of travel. Selecting a destination calculates a
 route through recorded paths; the app does not invent a detour around an
-obstacle, join disconnected components, or plan between map segments/floors.
+obstacle, join disconnected components, or plan between unrelated origins/floors.
 Route speech and the existing Assist guidance have mutually exclusive control.
 This prototype has not been validated as a mobility aid or evacuation system.
 

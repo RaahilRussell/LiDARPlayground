@@ -45,6 +45,8 @@ final class MappingCoordinator {
     private var segmentClosing = false
     private var launchRestorePending = false
     private var deferredRestore: (id: UUID, automatic: Bool)?
+    private var pendingSegmentCapture: MappingSessionCapture?
+    private var pendingSegmentGeneration: Int?
 
     var activeMap: SavedMapMetadata? {
         activeGeneration == manager.sessionGeneration ? storedActiveMap : nil
@@ -67,9 +69,10 @@ final class MappingCoordinator {
         colorCapture.reset(generation: manager.sessionGeneration)
         manager.mappingFrameTap = { [weak self] frame, generation in
             guard let self, self.foregroundActive, !self.manager.isUserPaused,
-                  !self.segmentClosing else { return }
+                  !self.segmentClosing, self.pendingSegmentCapture == nil else { return }
             self.synchronizeGeneration()
-            self.colorCapture.observe(frame: frame, generation: generation)
+            self.colorCapture.observe(frame: frame, generation: generation,
+                                      eligibleAnchorIDs: self.manager.currentSegmentMeshIDs)
         }
     }
 
@@ -162,9 +165,9 @@ final class MappingCoordinator {
     private func startConsumersIfActive() {
         UIApplication.shared.isIdleTimerDisabled = foregroundActive &&
             manager.runState == .running && !manager.isUserPaused
-        guard foregroundActive, !manager.isUserPaused, !segmentClosing else { return }
+        guard foregroundActive, !manager.isUserPaused else { return }
         navigation.startRecording()
-        textRecognition.start()
+        if !segmentClosing && pendingSegmentCapture == nil { textRecognition.start() }
     }
 
     private func automaticTick() async {
@@ -200,25 +203,30 @@ final class MappingCoordinator {
         requiresPlaceChoice = false
         automaticState = automaticSaveBlocked ? "Automatic saving needs attention" :
             (manager.canSaveWorldMap ? "Mapping continuously · saves automatically" : manager.relocalizationGuidance)
+        if navigation.capacityReached {
+            automaticState = "Mapping continues. Path recording is full; existing destinations and routes remain available."
+        }
         if let captureFailure = colorCapture.lastError {
             errorMessage = "A camera photo could not be captured: \(captureFailure) Surface mapping continues; the camera will retry."
         }
         let usage = manager.mappingUsage(including: restoredGeometry)
-        let needsRollover = colorCapture.needsSegmentRollover || navigation.capacityReached ||
+        let needsRollover = pendingSegmentCapture != nil || colorCapture.needsSegmentRollover ||
             textRecognition.needsSegmentRollover ||
             AutomaticMappingPolicy.needsSegment(
                 vertices: usage.vertices, faces: usage.faces, anchors: usage.anchors)
+        if needsRollover, pendingSegmentCapture == nil, !manager.canSaveWorldMap {
+            automaticState = "A storage segment is ready to close. Hold the phone steady and scan nearby surfaces so it can save; captured data stays in memory."
+        }
         let now = Date()
         guard AutomaticMappingPolicy.shouldSave(now: now,
             lastSavedAt: needsRollover ? nil : lastSavedAt, lastAttemptAt: lastAttemptAt,
-            ready: manager.canSaveWorldMap, foreground: foregroundActive,
+            ready: pendingSegmentCapture != nil || manager.canSaveWorldMap, foreground: foregroundActive,
             userPaused: manager.isUserPaused, busy: isBusy,
             enabled: autoSaveEnabled && !automaticSaveBlocked) else { return }
         lastAttemptAt = now
         isAutomaticSavePending = true
         if needsRollover {
             segmentClosing = true
-            navigation.pause()
             textRecognition.pause()
         }
         defer {
@@ -231,14 +239,10 @@ final class MappingCoordinator {
         guard saved, generation == manager.sessionGeneration,
               foregroundActive, !manager.isUserPaused else { return }
         if needsRollover, let previous = activeMap {
-            // Reset only after the whole segment (photos/graph/text included) is
-            // durable. Segments have different origins and never share routes.
-            startNewMap()
-            nextPlaceID = previous.placeID ?? previous.id
-            nextSegmentIndex = previous.segmentIndex + 1
-            let suffix = " · Part \(nextSegmentIndex + 1)"
-            nextSegmentName = String(previous.name.prefix(MapLimits.maxNameLength - suffix.count)) + suffix
-            statusMessage = "Saved \(previous.name). Continuing in a new map segment with a separate route start."
+            // The graph continues recording while the segment writes; its newest
+            // nodes go into the next checkpoint, never a fabricated new origin.
+            guard manager.beginMappingSegment() else { return }
+            beginNextSegment(after: previous)
         }
     }
 
@@ -271,6 +275,10 @@ final class MappingCoordinator {
     }
 
     func saveMap(name: String) async {
+        guard pendingSegmentCapture == nil else {
+            errorMessage = "A storage segment is waiting for its final checkpoint. Tap Resume Mapping to retry it and continue."
+            return
+        }
         _ = await performSave(name: name, automatic: false)
     }
 
@@ -283,7 +291,16 @@ final class MappingCoordinator {
             guard !normalizedName.isEmpty, normalizedName.count <= 80 else {
                 throw MappingCoordinatorError.invalidName
             }
-            let capture = try await manager.captureMappingSnapshot(suspendAfterCapture: closeSegment)
+            let capture: MappingSessionCapture
+            if closeSegment, pendingSegmentGeneration == generation, let pendingSegmentCapture {
+                capture = pendingSegmentCapture
+            } else {
+                capture = try await manager.captureMappingSnapshot(holdReconstructionAfterCapture: closeSegment)
+                if closeSegment {
+                    pendingSegmentCapture = capture
+                    pendingSegmentGeneration = generation
+                }
+            }
             await colorCapture.flush()
             guard isCurrent(operation), generation == manager.sessionGeneration else { return false }
 
@@ -370,9 +387,11 @@ final class MappingCoordinator {
 
     func resumeMap(id: UUID) async {
         let generation = manager.sessionGeneration
-        if activeMap?.id != id, manager.canSaveWorldMap {
+        let closesPending = pendingSegmentCapture != nil && pendingSegmentGeneration == generation
+        if activeMap?.id != id, manager.canSaveWorldMap || closesPending {
             let saved = await performSave(name: activeMap?.name ?? nextSegmentName ??
-                AutomaticMappingPolicy.automaticName(at: Date()), automatic: false)
+                AutomaticMappingPolicy.automaticName(at: Date()), automatic: false,
+                closeSegment: closesPending)
             guard saved, generation == manager.sessionGeneration else { return }
         }
         await restoreMap(id: id, automatic: false)
@@ -394,6 +413,9 @@ final class MappingCoordinator {
                 return
             }
             try manager.restoreWorldMap(worldMap)
+            pendingSegmentCapture = nil
+            pendingSegmentGeneration = nil
+            segmentClosing = false
             storedActiveMap = archive.metadata
             activeGeneration = manager.sessionGeneration
             requiresRelocalization = true
@@ -424,14 +446,19 @@ final class MappingCoordinator {
         do {
             try await store.delete(id: id)
             guard isCurrent(operation) else { return }
-            if activeMap?.id == id {
+            let deletedActive = activeMap?.id == id
+            if deletedActive {
                 // A continued scan can still be saved, but must receive a new ID.
                 storedActiveMap = nil
+                pauseAutomaticMapping()
+                lastSavedAt = nil
             }
             let saved = try await store.list()
             guard isCurrent(operation) else { return }
             maps = saved
-            statusMessage = "Deleted the saved place."
+            statusMessage = deletedActive ?
+                "Deleted the saved place. Mapping is paused so it is not recreated automatically. Resume Mapping to save the current scan as a new place." :
+                "Deleted the saved place."
         } catch { report(error, operation: operation) }
     }
 
@@ -461,6 +488,28 @@ final class MappingCoordinator {
         statusMessage = "New place started. Mapping and saving continue automatically while the app is open."
     }
 
+    private func beginNextSegment(after previous: SavedMapMetadata) {
+        storedActiveMap = nil
+        storedGeometry = nil
+        storedReferenceImageData = nil
+        savedTrailPrefix = []
+        requiresRelocalization = false
+        activeGeneration = manager.sessionGeneration
+        pendingSegmentCapture = nil
+        pendingSegmentGeneration = nil
+        nextPlaceID = previous.placeID ?? previous.id
+        nextSegmentIndex = previous.segmentIndex + 1
+        let oldSuffix = " · Part \(previous.segmentIndex + 1)"
+        let baseName = previous.segmentIndex > 0 && previous.name.hasSuffix(oldSuffix) ?
+            String(previous.name.dropLast(oldSuffix.count)) : previous.name
+        let suffix = " · Part \(nextSegmentIndex + 1)"
+        nextSegmentName = String(baseName.prefix(MapLimits.maxNameLength - suffix.count)) + suffix
+        lastSavedAt = nil; lastAttemptAt = nil
+        colorCapture.reset(generation: manager.sessionGeneration)
+        textRecognition.beginNewPlace()
+        statusMessage = "Saved \(previous.name). Mapping continues in a new storage segment; your recorded paths and destinations stay active."
+    }
+
     private func clearActivePlace() {
         storedActiveMap = nil
         activeGeneration = nil
@@ -473,6 +522,8 @@ final class MappingCoordinator {
         nextSegmentName = nil
         deferredRestore = nil
         launchRestorePending = false
+        pendingSegmentCapture = nil
+        pendingSegmentGeneration = nil
         automaticRestoreAttempt = false
         automaticSaveBlocked = false
         requiresPlaceChoice = false

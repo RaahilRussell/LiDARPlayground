@@ -211,4 +211,21 @@ struct NavigationTests {
                             obstruction: .observedBeyondStopDistance)
         #expect(follower.nextIndex == 1)
     }
+
+    @Test func fullRestoredGraphStopsRecordingWithoutLosingRoutes() throws {
+        let segment = UUID()
+        let nodes = (0..<(NavigationLimits.maxNodes - 2)).map { _ in
+            NavigationNode(id: UUID(), position: MapPosition(x: 0, y: 1.5, z: 0), segmentID: segment)
+        }
+        let graph = SavedNavigationGraph(nodes: nodes,
+            edges: [NavigationEdge(from: nodes[0].id, to: nodes[1].id)], startNodeID: nodes[0].id)
+        var recorder = NavigationRecorder(graph: graph)
+        #expect(recorder.capacityReached)
+        let recorded = recorder.record(pose(), now: 10)
+        #expect(!recorded)
+        #expect(recorder.graph == graph)
+        let route = try NavigationRouter.route(graph: recorder.graph, from: nodes[0].id,
+                                               to: nodes[1].id, name: "Existing destination")
+        #expect(route.nodes.count == 2)
+    }
 }

@@ -18,7 +18,7 @@ nonisolated enum NavigationError: Error, LocalizedError, Sendable {
         case .invalidGraph: "This place has an invalid recorded path."
         case .invalidLabel: "Use a destination name between 1 and 40 characters."
         case .duplicateLabel: "This destination name is already used. Choose a different name."
-        case .capacity: "This recorded path is full. Save this segment before starting another."
+        case .capacity: "This recorded path is full. Existing directions remain available. Start a new place to record more paths."
         case .noPose: "Wait for the phone to locate itself before marking or navigating."
         case .noRoute: "No continuous walked path connects this location to that destination."
         case .notOnPath: "You are not on the recorded path. Directions are paused."
@@ -126,7 +126,7 @@ nonisolated struct NavigationRecorder {
 
     init(graph: SavedNavigationGraph = SavedNavigationGraph()) {
         self.graph = graph
-        capacityReached = graph.nodes.count >= NavigationLimits.maxNodes
+        capacityReached = graph.nodes.count >= NavigationLimits.maxNodes - 2
     }
 
     mutating func breakContinuity() {
@@ -167,7 +167,8 @@ nonisolated struct NavigationRecorder {
         if graph.startNodeID == nil { graph.startNodeID = node.id }
         segmentID = component; referenceHeight = referenceHeight ?? pose.position.y
         currentNodeID = node.id; lastPose = pose
-        // Leave room for a label node and a durable automatic segment rollover.
+        // Stop before the hard limit. Existing paths remain routable; only an
+        // explicit new place resets the graph and its coordinate space.
         capacityReached = graph.nodes.count >= NavigationLimits.maxNodes - 2
         return true
     }

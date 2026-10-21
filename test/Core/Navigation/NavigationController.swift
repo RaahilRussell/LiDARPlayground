@@ -100,6 +100,9 @@ final class NavigationController {
     }
 
     func navigate(to labelID: UUID) {
+        // A new explicit destination replaces the old intent even when the
+        // requested path cannot be established. Never keep speaking old turns.
+        cancelNavigation()
         guard let label = graph.labels.first(where: { $0.id == labelID }) else {
             errorMessage = NavigationError.noRoute.localizedDescription; return
         }
@@ -107,6 +110,7 @@ final class NavigationController {
     }
 
     func navigateToStart() {
+        cancelNavigation()
         guard let start = graph.startNodeID else {
             errorMessage = NavigationError.noRoute.localizedDescription; return
         }

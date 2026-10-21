@@ -29,10 +29,40 @@ struct SavedTextObservationsView: View {
     @State private var selection: SavedTextAnnotation?
     @State private var selectedSign: SavedDirectionalSignage?
     @State private var searchText = ""
+    @State private var exportURL: URL?
+    @State private var showExport = false
+    @State private var exportError: String?
+    @State private var exporting = false
+    @State private var exportTask: Task<Void, Never>?
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 10) {
             TextField("Find text or a sign", text: $searchText).textFieldStyle(.roundedBorder)
+            Button {
+                exporting = true
+                let texts = annotations, signs = signage
+                exportTask = Task {
+                    do {
+                        let url = try await Task.detached(priority: .utility) {
+                            let data = try TextObservationExport.encode(annotations: texts, signage: signs)
+                            let url = FileManager.default.temporaryDirectory
+                                .appendingPathComponent("text-and-signs-\(UUID().uuidString).json")
+                            try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
+                            return url
+                        }.value
+                        guard !Task.isCancelled else {
+                            try? FileManager.default.removeItem(at: url)
+                            exporting = false
+                            return
+                        }
+                        exportURL = url
+                        showExport = true; exportError = nil
+                    } catch { exportError = error.localizedDescription }
+                    exporting = false
+                }
+            } label: { Label(exporting ? "Preparing data…" : "Export text & directions", systemImage: "square.and.arrow.up") }
+            .disabled(exporting || annotations.isEmpty)
+            if let exportError { Text(exportError).font(.caption).foregroundStyle(.orange) }
             Text("Text marks (\(annotations.count))").font(.headline)
             if annotations.isEmpty {
                 Text("Point the camera at printed text. Recognized text appears here automatically.")
@@ -108,6 +138,15 @@ struct SavedTextObservationsView: View {
                 .navigationTitle("Directional sign")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { selectedSign = nil } } }
             }
+        }
+        .sheet(isPresented: $showExport, onDismiss: {
+            if let exportURL { try? FileManager.default.removeItem(at: exportURL) }
+            exportURL = nil
+        }) {
+            if let exportURL { ShareSheet(items: [exportURL]) }
+        }
+        .onDisappear {
+            if !showExport { exportTask?.cancel() }
         }
     }
 }

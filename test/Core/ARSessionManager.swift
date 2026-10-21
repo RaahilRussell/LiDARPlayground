@@ -73,10 +73,12 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     var canSaveWorldMap: Bool {
-        guard runState == .running, trackingIsNormal, !isRelocalizing, meshFaceCount > 0,
+        guard runState == .running, trackingIsNormal, !isRelocalizing,
+              !reconstructionHeld, !awaitingReconstructionReset, meshFaceCount > 0,
               let frame = session.currentFrame,
               frame.timestamp == lastFrameTimestamp,
               frame.timestamp >= minimumFrameTimestamp,
+              frame.timestamp >= reconstructionResetTimestamp,
               CACurrentMediaTime() - frame.timestamp < 0.5 else { return false }
         return worldMappingStatus == .extending || worldMappingStatus == .mapped
     }
@@ -128,6 +130,14 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// the current camera view. Saved baseline chunks honor these tombstones.
     private(set) var removedMeshAnchorIDs: Set<UUID> = []
     private var meshStats: [UUID: (v: Int, f: Int)] = [:]
+    private var reconstructionHeld = false
+    private var awaitingReconstructionReset = false
+    private var reconstructionResetTimestamp: TimeInterval = 0
+    private var retiredMeshIDs: Set<UUID> = []
+    private var retiredMeshRemovals: Set<UUID> = []
+    private var heldMeshRemovals: Set<UUID> = []
+    private var segmentMeshIDs: Set<UUID>?
+    var currentSegmentMeshIDs: Set<UUID>? { segmentMeshIDs }
 
     /// Estimate the actual merge rather than taking the larger of two counts:
     /// a revisited room can contain disjoint saved and currently visible chunks.
@@ -192,7 +202,9 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         if supportsSmoothedSceneDepth { semantics.insert(.smoothedSceneDepth) }
         config.frameSemantics = semantics
 
-        if supportsMeshClassification {
+        if reconstructionHeld {
+            config.sceneReconstruction = []
+        } else if supportsMeshClassification {
             config.sceneReconstruction = .meshWithClassification
         } else if supportsMesh {
             config.sceneReconstruction = .mesh
@@ -257,6 +269,32 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     func startNewMap() {
         reset()
         start()
+    }
+
+    /// Rotate the reconstruction file while retaining the AR world and route.
+    /// Existing non-mesh anchors, camera pose, generation, and localization proof
+    /// survive this option. Only newly reconstructed chunks enter the next file.
+    @discardableResult
+    func beginMappingSegment() -> Bool {
+        guard supportsMesh, foregroundActive, userWantsRunning, !isUserPaused,
+              runState == .running, !isRelocalizing else { return false }
+        retiredMeshIDs = Set(meshStats.keys)
+        retiredMeshIDs.formUnion(session.currentFrame?.anchors.compactMap {
+            ($0 as? ARMeshAnchor)?.identifier
+        } ?? [])
+        retiredMeshRemovals = heldMeshRemovals.intersection(retiredMeshIDs)
+        heldMeshRemovals = []
+        segmentMeshIDs = []
+        awaitingReconstructionReset = true
+        reconstructionResetTimestamp = CACurrentMediaTime()
+        reconstructionHeld = false
+        meshStats = [:]
+        meshAnchorCount = 0; meshVertexCount = 0; meshFaceCount = 0
+        removedMeshAnchorIDs = []
+        trail = []; lastTrailTime = 0
+        mappingRevision &+= 1
+        session.run(makeConfiguration(), options: [.resetSceneReconstruction])
+        return true
     }
 
     private func runRequestedConfiguration() {
@@ -396,11 +434,17 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         let ids = anchors.compactMap { ($0 as? ARMeshAnchor)?.identifier }
         guard !ids.isEmpty else { return }
         MainActor.assumeIsolated {
+            if self.reconstructionHeld { self.heldMeshRemovals.formUnion(ids) }
             // Resets/relocalization also remove anchors. Those events must not
             // delete the saved baseline before its coordinate space is restored.
             if self.runState == .running, self.trackingIsNormal, !self.isRelocalizing {
-                self.removedMeshAnchorIDs.formUnion(ids)
+                if !self.reconstructionHeld {
+                    self.removedMeshAnchorIDs.formUnion(ids.filter {
+                        self.segmentMeshIDs?.contains($0) ?? true
+                    })
+                }
             }
+            self.retiredMeshRemovals.formUnion(ids.filter { self.retiredMeshIDs.contains($0) })
             self.applyMesh(updates: [:], removed: ids)
         }
     }
@@ -415,8 +459,11 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func applyMesh(updates: [UUID: (v: Int, f: Int)], removed: [UUID]) {
+        guard !reconstructionHeld else { return }
         mappingRevision &+= 1
         for (id, value) in updates {
+            guard segmentMeshIDs == nil || !retiredMeshIDs.contains(id) || retiredMeshRemovals.contains(id) else { continue }
+            segmentMeshIDs?.insert(id)
             meshStats[id] = value
             removedMeshAnchorIDs.remove(id)
         }
@@ -433,6 +480,10 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     private func clearDerivedState() {
+        reconstructionHeld = false
+        awaitingReconstructionReset = false
+        reconstructionResetTimestamp = 0
+        retiredMeshIDs = []; retiredMeshRemovals = []; heldMeshRemovals = []; segmentMeshIDs = nil
         mappingRevision &+= 1
         meshStats.removeAll()
         removedMeshAnchorIDs.removeAll()
@@ -457,6 +508,12 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         let hasRestoredOrigin = !restoringSavedMap || frame.anchors.contains { $0.identifier == restorationAnchorID }
         updateTracking(frame.camera.trackingState, acceptsLocalization: hasRestoredOrigin)
         worldMappingStatus = frame.worldMappingStatus
+        if awaitingReconstructionReset, frame.timestamp >= reconstructionResetTimestamp,
+           frame.anchors.contains(where: { anchor in
+               anchor is ARMeshAnchor && (segmentMeshIDs?.contains(anchor.identifier) ?? false)
+           }) {
+            awaitingReconstructionReset = false
+        }
         if fpsLastTimestamp > 0 {
             let dt = t - fpsLastTimestamp
             if dt > 0 {
@@ -619,7 +676,9 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     /// archive. Metal buffers are copied here before any asynchronous work.
     private func copyMappingGeometry() throws -> (SavedMapGeometry, CVPixelBuffer, CGImagePropertyOrientation) {
         guard canSaveWorldMap, let frame = session.currentFrame else { throw MappingSessionError.notReady }
-        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }.filter {
+            segmentMeshIDs?.contains($0.identifier) ?? true
+        }
         guard !anchors.isEmpty else { throw MappingSessionError.noSurface }
         let vertexCount = anchors.reduce(0) { $0 + $1.geometry.vertices.count }
         let faceCount = anchors.reduce(0) { $0 + $1.geometry.faces.count }
@@ -648,7 +707,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
     }
 
-    func captureMappingSnapshot(suspendAfterCapture: Bool = false) async throws -> MappingSessionCapture {
+    func captureMappingSnapshot(holdReconstructionAfterCapture: Bool = false) async throws -> MappingSessionCapture {
         guard supportsMesh else { throw MappingSessionError.unsupported }
         guard canSaveWorldMap else { throw MappingSessionError.notReady }
         let generation = sessionGeneration
@@ -661,14 +720,6 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         }
         guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
         let (geometry, imageBuffer, orientation) = try copyMappingGeometry()
-        if suspendAfterCapture {
-            // Final segment checkpoint: no surface may arrive after the last
-            // copied mesh and then be discarded when the next origin starts.
-            // Preserve intent so foreground recovery can still resume safely.
-            session.pause()
-            runState = .paused
-            invalidateLiveMetrics()
-        }
         // A restored anchor proves a normal frame belongs to this saved world,
         // not a final frame from the session that ran immediately before loading.
         // Replacing the marker also prevents old map markers from accumulating.
@@ -689,8 +740,18 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
             }
             return (worldData, preview)
         }.value
-        guard generation == sessionGeneration,
-              suspendAfterCapture || canSaveWorldMap else { throw MappingSessionError.changedSession }
+        guard generation == sessionGeneration, canSaveWorldMap else { throw MappingSessionError.changedSession }
+        if holdReconstructionAfterCapture {
+            // Copy once more after encoding, then stop reconstruction intake.
+            // No throwing work remains after the hold begins: the coordinator
+            // can always retain this immutable capture if the disk write fails.
+            let (finalGeometry, _, _) = try copyMappingGeometry()
+            let result = MappingSessionCapture(geometry: finalGeometry, worldMapData: data.0, referenceImageData: data.1)
+            reconstructionHeld = true
+            heldMeshRemovals = []
+            session.run(makeConfiguration())
+            return result
+        }
         return MappingSessionCapture(geometry: geometry, worldMapData: data.0, referenceImageData: data.1)
     }
 
