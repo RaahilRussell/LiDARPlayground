@@ -86,7 +86,7 @@ struct WearerModeView: View {
         .buttonStyle(.borderedProminent)
         .tint(guidance.running ? Theme.bad : Theme.good)
         .accessibilityHint(guidance.running
-            ? "Stops camera sensing and spoken warnings."
+            ? "Stops guidance warnings. The camera remains available for mapping."
             : "Starts camera sensing, spoken and haptic proximity warnings.")
     }
 

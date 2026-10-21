@@ -46,6 +46,10 @@ final class VisionInferenceEngine {
     private(set) var loadState: ModelLoadState = .notLoaded
     private(set) var modelPresence: [ModelVariant: Bool] = [:]
     private(set) var latestResult: DetectionResult?
+    /// Exactly one source snapshot, paired with latestResult for synchronized
+    /// RGB/depth/pose fusion. Never retain a queue of ARKit frame buffers.
+    private(set) var latestFrame: SensorFrame?
+    private(set) var resultSessionGeneration: Int = -1
     private(set) var measuredInferenceMs: Double = 0
     private(set) var measuredEndToEndMs: Double = 0
     private(set) var measuredRateHz: Double = 0
@@ -173,12 +177,18 @@ final class VisionInferenceEngine {
         isEnabled = false
         loopTask?.cancel()
         loopTask = nil
+        clearResults()
+    }
+
+    func clearResults() {
+        latestResult = nil
+        latestFrame = nil
     }
 
     /// Switches model at runtime; any in-flight inference finishes and is discarded.
     func switchModel(to variant: ModelVariant) {
         selectedVariant = variant
-        latestResult = nil
+        clearResults()
         loadSelectedModel()
     }
 
@@ -197,10 +207,22 @@ final class VisionInferenceEngine {
 
     private func tick(interval: Double) async {
         guard !isInferring else { return }
+        if let provider, resultSessionGeneration != provider.sessionGeneration {
+            clearResults()
+        }
+        if let frame = latestFrame,
+           !ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) {
+            clearResults()
+        }
         guard sdkAvailable else { loadState = .sdkUnavailable; report(.notReady(.sdkUnavailable)); return }
         guard loadState == .loaded else { report(.notReady(.modelNotLoaded)); return }
-        guard let provider, provider.isRunning else { report(.notReady(.sessionNotRunning)); return }
-        guard let frame = provider.snapshot() else { report(.notReady(.noFrame)); return }
+        guard let provider, provider.isRunning else {
+            clearResults(); report(.notReady(.sessionNotRunning)); return
+        }
+        guard let frame = provider.snapshot() else {
+            clearResults(); report(.notReady(.noFrame)); return
+        }
+        let generation = provider.sessionGeneration
         isInferring = true
         defer { isInferring = false }
 
@@ -223,7 +245,11 @@ final class VisionInferenceEngine {
             captureToResultMs: detection.captureToResultMs, objectCount: detection.objects.count,
             skippedSlots: BenchmarkMath.skippedInferenceSlots(cycleSeconds: cycle, targetInterval: interval))))
         // A model switched away mid-flight: the measurement is real, the overlay is stale.
-        guard variant == selectedVariant else { return }
+        guard !Task.isCancelled, isEnabled, variant == selectedVariant,
+              provider.isRunning, provider.sessionGeneration == generation,
+              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
+        latestFrame = frame
+        resultSessionGeneration = generation
         publish(detection)
         #else
         _ = (variant, threshold, startWall, frame)

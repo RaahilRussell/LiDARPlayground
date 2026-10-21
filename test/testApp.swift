@@ -14,7 +14,8 @@ import SwiftUI
 struct testApp: App {
     /// The single, app-wide owner of the one and only `ARSession`.
     /// Every tab reads from this shared instance — we never create a second session.
-    @State private var ar = ARSessionManager()
+    @State private var ar: ARSessionManager
+    @State private var mapping: MappingCoordinator
 
     /// AI Perception layer (CV, depth refinement, fusion, haptics, diagnostics).
     /// Shares the one ARSession via ARSensorProvider — no second capture session.
@@ -22,10 +23,17 @@ struct testApp: App {
 
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        let manager = ARSessionManager()
+        _ar = State(initialValue: manager)
+        _mapping = State(initialValue: MappingCoordinator(manager: manager))
+    }
+
     var body: some Scene {
         WindowGroup {
             AppRootView()
                 .environment(ar)
+                .environment(mapping)
                 .environment(perception)
                 .preferredColorScheme(.dark)
                 .onAppear { perception.configure(with: ar) }

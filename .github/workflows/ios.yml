@@ -1,0 +1,69 @@
+name: iOS build and tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 35
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Xcode and resolve pinned packages
+        run: |
+          xcodebuild -version
+          xcodebuild -resolvePackageDependencies -project test.xcodeproj -scheme test -onlyUsePackageVersionsFromResolvedFile
+      - name: Build unsigned iPhone application
+        run: |
+          set -o pipefail
+          xcodebuild -project test.xcodeproj -scheme test -configuration Debug \
+            -destination 'generic/platform=iOS' -derivedDataPath build/Device \
+            -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO build | tee device-build.log
+      - name: Find available iOS 26.5 simulator
+        id: simulator
+        run: |
+          xcrun simctl list devices available --json > /tmp/lidar-simulators.json
+          python3 - <<'PY'
+          import json, os
+          with open('/tmp/lidar-simulators.json') as source:
+              devices = json.load(source)['devices']
+          candidates = [device for runtime, values in devices.items()
+                        if runtime.endswith('iOS-26-5') for device in values
+                        if device.get('isAvailable') and device['name'].startswith('iPhone')]
+          if not candidates:
+              raise SystemExit('No iOS 26.5 iPhone simulator installed. Install the runtime; do not lower the deployment target.')
+          device = sorted(candidates, key=lambda item: item['name'])[0]
+          print(f"Testing on {device['name']} ({device['udid']})")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"udid={device['udid']}\n")
+          PY
+      - name: Run deterministic regression tests
+        run: |
+          set -o pipefail
+          xcodebuild -project test.xcodeproj -scheme test -configuration Debug \
+            -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}' \
+            -destination-timeout 120 -derivedDataPath build/Simulator \
+            -resultBundlePath TestResults.xcresult -parallel-testing-enabled NO \
+            -onlyUsePackageVersionsFromResolvedFile CODE_SIGNING_ALLOWED=NO test | tee simulator-tests.log
+      - name: Preserve diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: |
+            TestResults.xcresult
+            device-build.log
+            simulator-tests.log
+          if-no-files-found: ignore

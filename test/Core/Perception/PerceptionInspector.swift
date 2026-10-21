@@ -315,7 +315,7 @@ final class PerceptionInspector {
                                                    width: 256, height: 192)
                 return FramePreviews(rgb: rgb, depth: nil, confidence: nil, stats: nil)
             }
-            let field = DepthRefinement.field(from: depthMap, confidence: frame.confidenceMap)
+            let field = DepthRefinement.field(from: depthMap, confidence: frame.rawConfidenceMap)
             let w = field.width, h = field.height
             let guide = DepthRefinement.rgbGuide(frame.capturedImage, width: w, height: h)
             return FramePreviews(

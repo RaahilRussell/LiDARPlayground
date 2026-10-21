@@ -60,6 +60,7 @@ final class ProximityDriver {
     private var lastLoggedState: ProximityState?
     private var smoothedUrgency: Float = 0
     private var smoothedBearing: Float = 0
+    private var sessionGeneration: Int = -1
 
     init(proximity: ProximityEvaluator, spatial: SpatialAlgorithmsEngine) {
         self.proximity = proximity
@@ -93,6 +94,7 @@ final class ProximityDriver {
         smoothedDistance = nil; primaryKey = nil; stableFrames = 0
         smoothedUrgency = 0; smoothedBearing = 0
         primaryLabel = nil; primaryDistance = nil; primaryRegion = nil
+        primaryTTC = nil
     }
 
     private func loop() async {
@@ -119,6 +121,22 @@ final class ProximityDriver {
             log(event); return
         }
 
+        if sessionGeneration != provider?.sessionGeneration {
+            sessionGeneration = provider?.sessionGeneration ?? -1
+            resetFilters()
+        }
+        guard let provider, let frame = provider.snapshot(), frame.trackingIsNormal,
+              spatial.sessionGeneration == provider.sessionGeneration,
+              ARSensorProvider.isFresh(timestamp: spatial.frameTimestamp, now: now) else {
+            resetFilters()
+            let event = proximity.evaluate(nearest: nil, confidence: nil, region: nil, label: nil,
+                                           isSimulated: false, inputTimestamp: now)
+            updateFeedback(state: event.state, distance: nil, ttc: nil,
+                           inPath: true, bearing: 0, now: now)
+            log(event)
+            return
+        }
+
         let hazard: Hazard?
         switch source {
         case .fusedObjects: hazard = fusedHazard() ?? occupancyHazard()
@@ -141,8 +159,8 @@ final class ProximityDriver {
             log(event)
         } else {
             // No hazard: observed-free space is CLEAR; never-observed space is UNCERTAIN.
-            let anyObservedFree = spatial.occupancy.contains { $0.occupancy == .observedFree }
-            let event = anyObservedFree
+            let forwardObservedFree = spatial.occupancy.contains { $0.id == .center && $0.occupancy == .observedFree }
+            let event = forwardObservedFree
                 ? proximity.evaluate(nearest: 10, confidence: 1, region: nil, label: nil,
                                      isSimulated: false, inputTimestamp: now)
                 : proximity.evaluate(nearest: nil, confidence: nil, region: nil, label: nil,
@@ -212,20 +230,32 @@ final class ProximityDriver {
                       label: primary.label, ttc: primary.ttc, bearing: primary.bearingDeg)
     }
 
-    /// Raw-geometry fallback: nearest occupied / low-confidence region.
+    /// Raw geometry uses the measured distance even when the occupancy grid's
+    /// fixed one-metre threshold labels a cell free. Proximity thresholds remain
+    /// independently configurable (the default caution distance is two metres).
     private func occupancyHazard() -> Hazard? {
-        let candidates = spatial.occupancy.filter { $0.occupancy == .occupied || $0.occupancy == .lowConfidence }
-        guard let nearest = candidates.min(by: {
-            ($0.nearestMeters ?? .greatestFiniteMagnitude) < ($1.nearestMeters ?? .greatestFiniteMagnitude)
-        }), let d = nearest.nearestMeters else { return nil }
+        guard let nearest = Self.occupancyInput(from: spatial.occupancy,
+                                                cautionDistance: proximity.cautionDistance) else { return nil }
         let bearing: Float
-        switch nearest.id {
+        switch nearest.region {
         case .left: bearing = -45
         case .right: bearing = 45
         case .center: bearing = 0
         }
-        return Hazard(distance: d, confidence: nearest.meanConfidence, region: nearest.id,
+        return Hazard(distance: nearest.meters, confidence: nearest.confidence, region: nearest.region,
                       label: nil, ttc: nil, bearing: bearing)
+    }
+
+    nonisolated static func occupancyInput(from regions: [RegionOccupancy], cautionDistance: Float)
+        -> (meters: Float, confidence: Float, region: SpatialRegion)? {
+        // A distant side sample must not assert that an unobserved forward path
+        // is clear. Nearby side hazards may still produce a caution cue.
+        let candidates = regions.filter { region in
+            guard let distance = region.nearestMeters, distance.isFinite, distance > 0,
+                  region.meanConfidence.isFinite else { return false }
+            return region.id == .center || distance <= cautionDistance
+        }
+        return ProximityInputSelector.select(from: candidates)
     }
 
     // MARK: - Clean alert log (transitions only)

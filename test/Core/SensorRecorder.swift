@@ -32,31 +32,102 @@ final class SensorRecorder {
 
     /// Records for a fixed short window, then captures a final frame. Bounded.
     func record(manager: ARSessionManager) async {
-        guard !isRecording, manager.runState == .running else { return }
+        guard !isRecording else { return }
+        guard manager.runState == .running, manager.trackingIsNormal, !manager.isRelocalizing else {
+            statusText = "Wait for normal tracking before recording."
+            return
+        }
         isRecording = true
+        defer { isRecording = false }
+        clearCapture()
+        statusText = "Recording…"
+
+        let generation = manager.sessionGeneration
+        let start = CACurrentMediaTime()
+        var lastSampleTimestamp: TimeInterval = -.infinity
+        while CACurrentMediaTime() - start < duration {
+            guard !Task.isCancelled else {
+                abortRecording("Recording cancelled.")
+                return
+            }
+            guard recordingSessionIsValid(manager: manager, generation: generation) else {
+                abortRecording("Recording stopped because tracking or the map changed. Try again.")
+                return
+            }
+            // Polling can see the same frame twice. Each exported sample must
+            // correspond to a new capture, rather than repeating a paused pose.
+            if let frame = currentRecordingFrame(manager: manager, generation: generation),
+               frame.timestamp > lastSampleTimestamp {
+                poseSamples.append((frame.timestamp, frame.camera.transform))
+                lastSampleTimestamp = frame.timestamp
+            }
+            progress = min(1, (CACurrentMediaTime() - start) / duration)
+            do {
+                try await Task.sleep(for: .milliseconds(33))
+            } catch {
+                abortRecording("Recording cancelled.")
+                return
+            }
+        }
+
+        // currentFrame can advance just before its main-queue delegate callback.
+        // Briefly wait for an accepted frame instead of capturing that transient
+        // unaccepted frame or treating it as a session failure.
+        for attempt in 0..<6 {
+            guard !Task.isCancelled else {
+                abortRecording("Recording cancelled.")
+                return
+            }
+            guard recordingSessionIsValid(manager: manager, generation: generation) else {
+                abortRecording("Recording stopped because tracking or the map changed. Try again.")
+                return
+            }
+            if let frame = currentRecordingFrame(manager: manager, generation: generation) {
+                capture(frame: frame)
+                hasRecording = !poseSamples.isEmpty && metadata != nil
+                progress = hasRecording ? 1 : 0
+                statusText = hasRecording
+                    ? "Captured \(poseSamples.count) poses · \(pointCloud.count) points"
+                    : "Recording failed"
+                return
+            }
+            if attempt < 5 {
+                do { try await Task.sleep(for: .milliseconds(16)) }
+                catch { abortRecording("Recording cancelled."); return }
+            }
+        }
+        abortRecording("No fresh frame was available to finish the recording. Try again.")
+    }
+
+    private func recordingSessionIsValid(manager: ARSessionManager, generation: Int) -> Bool {
+        guard manager.sessionGeneration == generation, manager.runState == .running,
+              manager.trackingIsNormal, !manager.isRelocalizing else { return false }
+        let age = CACurrentMediaTime() - manager.lastFrameTimestamp
+        return age.isFinite && age >= 0 && age < 0.5
+    }
+
+    private func currentRecordingFrame(manager: ARSessionManager, generation: Int) -> ARFrame? {
+        guard recordingSessionIsValid(manager: manager, generation: generation),
+              let frame = manager.session.currentFrame,
+              frame.timestamp == manager.lastFrameTimestamp,
+              case .normal = frame.camera.trackingState else { return nil }
+        let age = CACurrentMediaTime() - frame.timestamp
+        guard age.isFinite, age >= 0, age < 0.5 else { return nil }
+        return frame
+    }
+
+    private func clearCapture() {
         hasRecording = false
         progress = 0
         poseSamples.removeAll()
-        statusText = "Recording…"
+        depthMatrix.removeAll()
+        pointCloud = PointCloud()
+        metadata = nil
+    }
 
-        let start = CACurrentMediaTime()
-        while CACurrentMediaTime() - start < duration, !Task.isCancelled {
-            if let frame = manager.session.currentFrame {
-                poseSamples.append((frame.timestamp, frame.camera.transform))
-            }
-            progress = min(1, (CACurrentMediaTime() - start) / duration)
-            try? await Task.sleep(for: .milliseconds(33))
-        }
-
-        if let frame = manager.session.currentFrame {
-            capture(frame: frame)
-        }
-
-        isRecording = false
-        hasRecording = !poseSamples.isEmpty
-        statusText = hasRecording
-            ? "Captured \(poseSamples.count) poses · \(pointCloud.count) points"
-            : "Recording failed"
+    private func abortRecording(_ message: String) {
+        clearCapture()
+        statusText = message
     }
 
     private func capture(frame: ARFrame) {
@@ -88,7 +159,8 @@ final class SensorRecorder {
             imageWidth: Int(frame.camera.imageResolution.width),
             imageHeight: Int(frame.camera.imageResolution.height),
             depthWidth: dw, depthHeight: dh,
-            depthSource: frame.smoothedSceneDepth != nil ? "smoothedSceneDepth" : "sceneDepth",
+            depthSource: frame.smoothedSceneDepth != nil ? "smoothedSceneDepth"
+                : (frame.sceneDepth != nil ? "sceneDepth" : "Unavailable"),
             intrinsics: Exporters.rows(frame.camera.intrinsics),
             cameraTransform: Exporters.rows(frame.camera.transform),
             poseSampleCount: poseSamples.count,
