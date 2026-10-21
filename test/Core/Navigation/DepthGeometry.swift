@@ -88,7 +88,10 @@ nonisolated enum FloorEstimator {
     /// World y of the floor under the user, or nil if no convincing floor is in view.
     /// RANSAC returns the DOMINANT level plane, which can be a large table or bed,
     /// so after each fit we look again below it: the lowest convincing level plane
-    /// within `minDrop`…`maxDrop` under the camera is the floor.
+    /// within `minDrop`…`maxDrop` under the camera is the floor. Each pass keeps only
+    /// points more than 15 cm below the fitted plane itself (not below its height at
+    /// the camera, which on a ramp would keep refitting the same plane forever), so
+    /// every pass drops the previous plane's inliers and the loop terminates.
     static func floorY<G: RandomNumberGenerator>(points: [SIMD3<Float>], camera: SIMD3<Float>,
                                                  minDrop: Float = 0.6, maxDrop: Float = 2.2,
                                                  using rng: inout G) -> Float? {
@@ -97,7 +100,7 @@ nonisolated enum FloorEstimator {
         while let plane = SpatialAlgorithms.estimateFloor(points: candidates, using: &rng), plane.normal.y > 0.97 {
             let y = -(plane.normal.x * camera.x + plane.normal.z * camera.z + plane.d) / plane.normal.y
             lowest = y
-            candidates = candidates.filter { $0.y < y - 0.15 }
+            candidates = candidates.filter { plane.signedDistance($0) < -0.15 }
         }
         guard let lowest, camera.y - lowest >= minDrop, camera.y - lowest <= maxDrop else { return nil }
         return lowest

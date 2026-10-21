@@ -117,6 +117,14 @@ struct NavigationTests {
         #expect(abs(floorY) < 0.02)
     }
 
+    @Test func floorEstimateTerminatesOnARamp() throws {
+        // 5° downhill ahead: refitting by "below the height at the camera" looped forever here.
+        let ramp = Self.floorPatch(x: -1 ... 1, z: -4.5 ... -0.5).map { SIMD3($0.x, 0.0875 * $0.z, $0.z) }
+        var rng = SeededGenerator(seed: 5)
+        let floorY = try #require(FloorEstimator.floorY(points: ramp, camera: SIMD3(0, 1.35, 0), using: &rng))
+        #expect(abs(floorY) < 0.05)
+    }
+
     // MARK: Map + path
 
     @Test func hallwayWallsAreNotInThePath() {
@@ -215,17 +223,22 @@ struct NavigationTests {
     @Test func standingStillPulsesOnlyWhenTheLevelRises() {
         var p = AlertPolicy()
         let o = Self.obstacle(.overhead, at: 1.5, bottom: 1.5)
-        #expect(p.decide(Self.input(0, o)).haptic != nil)
-        for t in [0.5, 1.0, 2.0] { #expect(p.decide(Self.input(t, o)).haptic == nil) }
-        #expect(p.decide(Self.input(2.1, Self.obstacle(.overhead, at: 0.8, bottom: 1.5))).haptic != nil, "rise to STOP")
+        let first = p.decide(Self.input(0, o))
+        #expect(first.haptic != nil)
+        for t in [0.5, 1.0, 2.0] { let d = p.decide(Self.input(t, o)); #expect(d.haptic == nil) }
+        let closer = p.decide(Self.input(2.1, Self.obstacle(.overhead, at: 0.8, bottom: 1.5)))
+        #expect(closer.haptic != nil, "rise to STOP")
     }
 
     @Test func walkingRepeatsPulsesAtTheLevelCadence() {
         var p = AlertPolicy()
         let o = Self.obstacle(.overhead, at: 2.0, bottom: 1.5)                  // TTC 2 s → WARNING
-        #expect(p.decide(Self.input(0, o, speed: 1)).level == .warning)
-        #expect(p.decide(Self.input(0.3, o, speed: 1)).haptic == nil)
-        #expect(p.decide(Self.input(0.5, o, speed: 1)).haptic != nil)
+        let first = p.decide(Self.input(0, o, speed: 1))
+        #expect(first.level == .warning)
+        let early = p.decide(Self.input(0.3, o, speed: 1))
+        #expect(early.haptic == nil)
+        let due = p.decide(Self.input(0.5, o, speed: 1))
+        #expect(due.haptic != nil)
     }
 
     @Test func timeToContactRaisesTheLevelOnlyWhileWalking() {
@@ -237,28 +250,38 @@ struct NavigationTests {
 
     @Test func levelStepsDownOnlyAfterTheReleaseHold() {
         var p = AlertPolicy()
-        #expect(p.decide(Self.input(0, Self.obstacle(.overhead, at: 1.5, bottom: 1.5))).level == .warning)
-        #expect(p.decide(Self.input(0.1, nil)).level == .warning)
-        #expect(p.decide(Self.input(0.5, nil)).level == .warning)
-        #expect(p.decide(Self.input(0.8, nil)).level == .clear)
+        let first = p.decide(Self.input(0, Self.obstacle(.overhead, at: 1.5, bottom: 1.5)))
+        #expect(first.level == .warning)
+        let held = p.decide(Self.input(0.1, nil))
+        #expect(held.level == .warning)
+        let stillHeld = p.decide(Self.input(0.5, nil))
+        #expect(stillHeld.level == .warning)
+        let released = p.decide(Self.input(0.8, nil))
+        #expect(released.level == .clear)
     }
 
     @Test func theSameObstacleIsNotAnnouncedTwiceAtTheSameLevel() {
         var p = AlertPolicy()
         let o = Self.obstacle(.overhead, at: 1.5, bottom: 1.5)
-        #expect(p.decide(Self.input(0, o)).speech != nil)
-        #expect(p.decide(Self.input(7, o)).speech == nil)
-        #expect(p.decide(Self.input(7.1, Self.obstacle(.overhead, at: 0.9, bottom: 1.5))).speech?.interrupt == true)
+        let first = p.decide(Self.input(0, o))
+        #expect(first.speech != nil)
+        let later = p.decide(Self.input(7, o))
+        #expect(later.speech == nil)
+        let closer = p.decide(Self.input(7.1, Self.obstacle(.overhead, at: 0.9, bottom: 1.5)))
+        #expect(closer.speech?.interrupt == true)
     }
 
     @Test func losingTheSensorIsAnnouncedOnceAfterAGraceAndRecoveryIsSpoken() {
         var p = AlertPolicy()
-        #expect(p.decide(Self.input(0, nil, sensing: .noDepth)).speech == nil)
+        let withinGrace = p.decide(Self.input(0, nil, sensing: .noDepth))
+        #expect(withinGrace.speech == nil)
         let lost = p.decide(Self.input(1.0, nil, sensing: .noDepth))
         #expect(lost.speech?.text == SensingStatus.noDepth.spokenWarning)
         #expect(lost.haptic == HapticCue.sensingLost)
-        #expect(p.decide(Self.input(2.0, nil, sensing: .noDepth)).speech == nil)
-        #expect(p.decide(Self.input(3.0, nil)).speech?.text == "Sensing again.")
+        let again = p.decide(Self.input(2.0, nil, sensing: .noDepth))
+        #expect(again.speech == nil)
+        let recovered = p.decide(Self.input(3.0, nil))
+        #expect(recovered.speech?.text == "Sensing again.")
     }
 
     @Test func clearerSideNeedsTwoMetresOfObservedFloor() {

@@ -83,7 +83,7 @@ nonisolated struct AlertThresholds: Equatable, Sendable {
 }
 
 nonisolated struct HapticCue: Equatable, Sendable {
-    enum Texture: String, Sendable { case tap, doubleTap, buzz }
+    nonisolated enum Texture: String, Sendable { case tap, doubleTap, buzz }
     var texture: Texture
     var intensity: Float
     var sharpness: Float
