@@ -1,5 +1,9 @@
 # Mapping architecture and review
 
+The shared-session and storage foundations are described here. Foreground
+autosave, captured color/photos, continuous recorded routes, and local OCR are
+described in [AUTOMATIC_MAPPING_ARCHITECTURE.md](AUTOMATIC_MAPPING_ARCHITECTURE.md).
+
 ## Tracking and reconstruction
 
 `ARSessionManager` remains the sole owner of `ARSession`. Apple's world tracking
@@ -52,7 +56,8 @@ metres, not GPS or a building-wide geographic frame.
   it does not pretend the place has been recognized.
 - Pause and foreground resume preserve a pending restore. Reset while paused
   queues reset options without turning the camera back on. New Map deliberately
-  starts a new coordinate space. Library browsing pauses live sensing.
+  starts a new coordinate space. Library browsing leaves automatic foreground
+  sensing active; Pause Mapping stops it explicitly.
 - Continued saves replace matching mesh identifiers and retain saved chunks
   outside the current view. Explicit ARKit mesh removals during normal tracking
   are recorded separately; reset/relocalization removals are excluded so they
@@ -101,9 +106,13 @@ configuration. The new coordinate-space transitions exposed existing problems:
 
 ## Performance and limits
 
-The app targets room-scale, explicitly saved scans. Archive caps are 2,000 mesh
+The app targets room-scale scans with automatic and explicit checkpoints.
+Per-segment archive caps are 2,000 mesh
 anchors, 750,000 vertices, 1,500,000 triangles, 6,000 trail points, 64 MiB of
-world-map data, 128 MiB of serialized geometry and 5 MiB of reference image data.
+world-map data, 256 MiB of serialized geometry and 5 MiB of reference image data.
+The automatic coordinator rotates reconstruction/photo/text storage segments
+before their limits while preserving the AR tracking world and navigation graph.
+The companion architecture document describes the additional payload bounds.
 The limits reject an oversized save with an explanation; they do not silently
 drop triangles. Disk work and offline normal generation run outside the main
 actor. Native scene updates and ARKit buffer copying remain on the session actor.
@@ -112,8 +121,9 @@ camera rate. Profile capture latency and sustained memory/thermal use on device.
 
 SceneKit is retained to fit the existing rendering architecture. A future move
 to RealityKit can preserve the map store and coordinator boundaries. The saved
-geometry is untextured; the reference image is a localization aid, not a texture
-atlas. Historical surfaces may represent objects that have moved. They are not
+geometry now includes observed vertex colors and calibrated keyframe photos;
+it does not contain a baked texture atlas. The reference image remains a
+localization aid. Historical surfaces may represent objects that have moved. They are not
 fed into the live hazard system as current obstacles or certified free space.
 If ARKit reconstructs the same surface with a new anchor identifier on a later
 visit, historical and new chunks can overlap. This version does not globally
@@ -121,8 +131,9 @@ remesh or optimize those chunks; the archive caps still apply.
 
 ARKit relocalization depends on visual overlap, lighting and scene stability.
 There is no guarantee of recognition, globally consistent multi-room mapping,
-cross-device map compatibility, automatic place recognition, or navigation
-safety. These capabilities require separate design and measured validation.
+cross-device map compatibility, successful automatic place recognition, or
+navigation safety. Recognition and recorded-route guidance need measured
+physical-device validation.
 
 ## Verification
 

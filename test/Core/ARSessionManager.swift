@@ -203,7 +203,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         config.frameSemantics = semantics
 
         if reconstructionHeld {
-            config.sceneReconstruction = .none
+            config.sceneReconstruction = []
         } else if supportsMeshClassification {
             config.sceneReconstruction = .meshWithClassification
         } else if supportsMesh {
