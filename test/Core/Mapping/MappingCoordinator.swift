@@ -420,7 +420,8 @@ final class MappingCoordinator {
             geometry.navigation = navigation.graphForSaving()
             geometry.textAnnotations = textRecognition.annotations
             geometry.directionalSignage = textRecognition.directionalSignage
-            if let perceptionSnapshot { geometry.perceptionHazards = perceptionSnapshot }
+            geometry.perceptionHazards = perceptionEvidenceForCheckpoint(
+                freshSnapshot: perceptionSnapshot, captured: geometry.perceptionHazards)
             let previous = continuesSavedMap ? activeMap : nil
             let now = Date()
             let metadata = SavedMapMetadata(
@@ -483,6 +484,15 @@ final class MappingCoordinator {
         retainedArchive = archive
         retainedGeneration = generation
         checkpointCapturedAt = capturedAt
+    }
+
+    /// A held segment retry has no new world snapshot. Preserve evidence from
+    /// its complete retained archive even if its first disk write failed before
+    /// an active saved baseline was installed. A fresh empty snapshot is still
+    /// authoritative; a different coordinate generation can never supply data.
+    func perceptionEvidenceForCheckpoint(freshSnapshot: [SavedPerceptionHazard]?,
+                                        captured: [SavedPerceptionHazard]) -> [SavedPerceptionHazard] {
+        freshSnapshot ?? availableCheckpoint?.geometry.perceptionHazards ?? captured
     }
 
     private func saveRetainedCheckpoint(name: String, operation: UUID, generation: Int) async throws -> Bool {

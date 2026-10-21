@@ -96,4 +96,30 @@ struct MapCheckpointRecoveryTests {
         #expect(mapping.retainedCheckpointAt == capturedAt)
         #expect(mapping.canSaveMap)
     }
+
+    @Test func pendingFirstCheckpointKeepsHazardsWithoutAHealthyWorldSnapshot() async throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MapStore(rootURL: root)
+        let manager = ARSessionManager()
+        let mapping = MappingCoordinator(manager: manager, store: store)
+        var original = archive()
+        original.geometry.perceptionHazards = [SavedPerceptionHazard(
+            position: MapPosition(x: 1, y: 2, z: 3), radius: 0.4, label: "sign",
+            confidence: 0.8, minHeight: 1.8, maxHeight: 2.2, height: .overhead)]
+        // This is the state after assembling a first checkpoint but before its
+        // disk write succeeds: retained evidence exists, no saved baseline does.
+        try mapping.retainCheckpoint(original, generation: manager.sessionGeneration, capturedAt: capturedAt)
+        #expect(mapping.activeMap == nil)
+        var retried = original
+        retried.geometry.perceptionHazards = mapping.perceptionEvidenceForCheckpoint(
+            freshSnapshot: nil, captured: [])
+        try await store.save(retried)
+        let saved = try await store.load(id: original.metadata.id)
+        #expect(saved.geometry.perceptionHazards == original.geometry.perceptionHazards)
+        // A real new observation can intentionally replace historical evidence.
+        #expect(mapping.perceptionEvidenceForCheckpoint(freshSnapshot: [], captured: []).isEmpty)
+        mapping.startNewMap()
+        #expect(mapping.perceptionEvidenceForCheckpoint(freshSnapshot: nil, captured: []).isEmpty)
+    }
 }
