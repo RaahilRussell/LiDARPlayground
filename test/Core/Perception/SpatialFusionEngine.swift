@@ -38,6 +38,8 @@ final class SpatialFusionEngine {
         self.vision = vision
     }
 
+    var isRunning: Bool { loopTask != nil }
+
     func start() {
         guard loopTask == nil else { return }
         loopTask = Task { [weak self] in await self?.loop() }

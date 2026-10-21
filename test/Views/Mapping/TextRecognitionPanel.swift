@@ -190,9 +190,7 @@ struct LiveTextMarkers: View {
     var body: some View {
         GeometryReader { proxy in
             TimelineView(.periodic(from: .now, by: 0.25)) { _ in
-                if manager.runState == .running, manager.trackingIsNormal, !manager.isRelocalizing,
-                   let frame = manager.session.currentFrame, frame.timestamp == manager.lastFrameTimestamp,
-                   ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) {
+                if let frame = manager.session.currentFrame, manager.isCurrentWorldFrame(frame) {
                     let orientation = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                         .first { $0.activationState == .foregroundActive }?.interfaceOrientation ?? .portrait
                     ForEach(controller.latestAnnotations) { annotation in

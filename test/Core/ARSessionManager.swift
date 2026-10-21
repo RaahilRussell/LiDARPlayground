@@ -60,6 +60,8 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     private(set) var relocalizationTimedOut = false
     /// Explicit pause survives scene changes and automatic-mapping ticks.
     private(set) var isUserPaused = false
+    /// Lets asynchronous load requests honor a newer explicit Pause command.
+    private(set) var pauseRevision = 0
     private(set) var mappingRevision = 0
 
     var worldMappingDescription: String {
@@ -73,14 +75,50 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     var canSaveWorldMap: Bool {
-        guard runState == .running, trackingIsNormal, !isRelocalizing,
-              !reconstructionHeld, !awaitingReconstructionReset, meshFaceCount > 0,
+        guard !reconstructionHeld, !awaitingReconstructionReset, meshFaceCount > 0,
               let frame = session.currentFrame,
-              frame.timestamp == lastFrameTimestamp,
-              frame.timestamp >= minimumFrameTimestamp,
-              frame.timestamp >= reconstructionResetTimestamp,
-              CACurrentMediaTime() - frame.timestamp < 0.5 else { return false }
-        return worldMappingStatus == .extending || worldMappingStatus == .mapped
+              isCurrentWorldFrame(frame),
+              frame.timestamp >= reconstructionResetTimestamp else { return false }
+        return frame.worldMappingStatus == .extending || frame.worldMappingStatus == .mapped
+    }
+
+    /// ARKit can publish currentFrame before its main-queue delegate is delivered.
+    /// Requiring equality with the last delegate timestamp makes polling readers
+    /// miss fresh camera/depth frames. Accept that newer frame after this run has
+    /// delivered its first frame, while retaining the reset and freshness barriers.
+    func isCurrentFrame(_ frame: ARFrame) -> Bool {
+        runState == .running && Self.acceptsFrameTimestamp(frame.timestamp,
+            lastAccepted: lastFrameTimestamp, minimum: minimumFrameTimestamp,
+            now: CACurrentMediaTime())
+    }
+
+    /// Completed image work may legitimately lag the newest camera frame, but
+    /// must never publish observations captured before a pause/resume or reset.
+    func isCurrentObservation(timestamp: TimeInterval) -> Bool {
+        runState == .running && Self.acceptsObservationTimestamp(timestamp,
+            lastAccepted: lastFrameTimestamp, minimum: minimumFrameTimestamp,
+            now: CACurrentMediaTime())
+    }
+
+    /// Camera-only previews/CV may use current images during relocalization.
+    /// Anything placing data in the saved world must additionally pass this gate.
+    func isCurrentWorldFrame(_ frame: ARFrame) -> Bool {
+        guard isCurrentFrame(frame), trackingIsNormal, !isRelocalizing,
+              !restoringSavedMap, case .normal = frame.camera.trackingState else { return false }
+        return true
+    }
+
+    nonisolated static func acceptsFrameTimestamp(_ timestamp: TimeInterval,
+        lastAccepted: TimeInterval, minimum: TimeInterval, now: TimeInterval) -> Bool {
+        acceptsObservationTimestamp(timestamp, lastAccepted: lastAccepted, minimum: minimum, now: now) &&
+        timestamp >= lastAccepted
+    }
+
+    nonisolated static func acceptsObservationTimestamp(_ timestamp: TimeInterval,
+        lastAccepted: TimeInterval, minimum: TimeInterval, now: TimeInterval) -> Bool {
+        timestamp.isFinite && lastAccepted.isFinite && minimum.isFinite && now.isFinite &&
+        lastAccepted > 0 && lastAccepted >= minimum &&
+        timestamp >= minimum && timestamp <= now && now - timestamp <= 0.5
     }
 
     var relocalizationGuidance: String {
@@ -232,6 +270,7 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     }
 
     func pause() {
+        pauseRevision &+= 1
         isUserPaused = true
         userWantsRunning = false
         session.pause()
@@ -295,6 +334,20 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
         mappingRevision &+= 1
         session.run(makeConfiguration(), options: [.resetSceneReconstruction])
         return true
+    }
+
+    /// A disk failure must not freeze the live mesh viewer. The coordinator
+    /// retains its immutable capture and refreshes it before retrying the write.
+    /// Re-enable reconstruction in the same world without removing any anchors.
+    func resumeReconstructionAfterCheckpointFailure() {
+        guard reconstructionHeld else { return }
+        reconstructionHeld = false
+        let removedWhileHeld = Array(heldMeshRemovals)
+        heldMeshRemovals = []
+        applyMesh(updates: [:], removed: removedWhileHeld)
+        if foregroundActive, userWantsRunning, runState == .running {
+            session.run(makeConfiguration())
+        }
     }
 
     private func runRequestedConfiguration() {
@@ -378,13 +431,19 @@ final class ARSessionManager: NSObject, ARSessionDelegate {
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
         MainActor.assumeIsolated {
             if self.userWantsRunning { self.runState = .interrupted }
+            self.relocalizationTimeoutTask?.cancel()
+            self.relocalizationTimeoutTask = nil
+            self.relocalizationTimedOut = false
             self.invalidateLiveMetrics()
         }
     }
 
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
         MainActor.assumeIsolated {
-            if self.userWantsRunning && self.foregroundActive { self.runState = .running }
+            guard self.userWantsRunning, self.foregroundActive else { return }
+            self.minimumFrameTimestamp = CACurrentMediaTime()
+            self.runState = .running
+            self.beginRelocalization(resetTimer: true)
         }
     }
 

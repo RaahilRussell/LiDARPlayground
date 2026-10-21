@@ -157,6 +157,14 @@ struct MappingHomeView: View {
                 Text(mapping.activeMap?.name ?? "Automatically mapping this place")
                     .font(.headline)
                 Text(mapping.automaticState).font(.footnote).foregroundStyle(.secondary)
+                if mapping.automaticSaveNeedsAttention {
+                    Button("Retry Saving", systemImage: "arrow.clockwise") {
+                        mapping.retryAutomaticSave()
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(mapping.isBusy)
+                    .accessibilityIdentifier("mapping.retrySaving")
+                }
                 if let saved = mapping.lastSavedAt {
                     Text("Last saved \(saved.formatted(date: .omitted, time: .standard))")
                         .font(.caption).foregroundStyle(.secondary)
@@ -368,7 +376,7 @@ private struct MappingLiveSurfaceView: View {
             if let holder { MeshARView(holder: holder) }
         }
         .onAppear { if holder == nil { holder = MeshSceneHolder(manager: ar) } }
-        .task {
+        .task(id: "\(ar.sessionGeneration)-\(ar.runState.rawValue)") {
             var lastGeneration = -1
             while !Task.isCancelled {
                 if lastGeneration != ar.sessionGeneration {
@@ -377,8 +385,10 @@ private struct MappingLiveSurfaceView: View {
                     lastGeneration = ar.sessionGeneration
                 }
                 if ar.runState == .running, let frame = ar.session.currentFrame {
-                    if ar.trackingIsNormal && !ar.isRelocalizing && frame.timestamp == ar.lastFrameTimestamp {
-                        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+                    if ar.isCurrentWorldFrame(frame) {
+                        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }.filter {
+                            ar.currentSegmentMeshIDs?.contains($0.identifier) ?? true
+                        }
                         holder?.refresh(anchors: anchors, mode: .solid)
                         holder?.showSavedGeometry(mapping.canDisplayRestoredGeometry ? mapping.restoredGeometry : nil,
                                                   excluding: Set(anchors.map(\.identifier)).union(ar.removedMeshAnchorIDs),
@@ -390,6 +400,9 @@ private struct MappingLiveSurfaceView: View {
                         holder?.refresh(anchors: [], mode: .solid)
                         holder?.showSavedGeometry(nil)
                     }
+                } else {
+                    holder?.refresh(anchors: [], mode: .solid)
+                    holder?.showSavedGeometry(nil)
                 }
                 try? await Task.sleep(for: .milliseconds(400))
             }

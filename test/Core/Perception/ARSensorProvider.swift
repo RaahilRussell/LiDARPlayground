@@ -27,14 +27,19 @@ final class ARSensorProvider {
     /// Builds a snapshot of the current frame, or nil if none is available.
     /// Cheap: copies buffer references + a few scalars (no pixel work).
     func snapshot() -> SensorFrame? {
-        guard isRunning, !manager.isRelocalizing else { return nil }
         guard let frame = manager.session.currentFrame,
-              frame.timestamp == manager.lastFrameTimestamp else { return nil }
-        // The manager accepts timestamps only after the current world's reset
-        // boundary, so this cannot expose ARKit's temporarily retained old frame.
-        guard Self.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return nil }
-        let trackingNormal: Bool
-        if case .normal = frame.camera.trackingState { trackingNormal = true } else { trackingNormal = false }
+              manager.isCurrentWorldFrame(frame) else { return nil }
+        return makeSnapshot(frame, worldTrackingValid: true)
+    }
+
+    /// Camera-only inference can continue while ARKit recognizes a saved place.
+    /// Its pose is explicitly untrusted until world tracking/localization pass.
+    func cameraSnapshot() -> SensorFrame? {
+        guard let frame = manager.session.currentFrame, manager.isCurrentFrame(frame) else { return nil }
+        return makeSnapshot(frame, worldTrackingValid: manager.isCurrentWorldFrame(frame))
+    }
+
+    private func makeSnapshot(_ frame: ARFrame, worldTrackingValid: Bool) -> SensorFrame {
         return SensorFrame(
             capturedImage: frame.capturedImage,
             depthMap: frame.sceneDepth?.depthMap,
@@ -45,7 +50,7 @@ final class ARSensorProvider {
             imageResolution: frame.camera.imageResolution,
             cameraTransform: frame.camera.transform,
             timestamp: frame.timestamp,
-            trackingIsNormal: trackingNormal)
+            trackingIsNormal: worldTrackingValid)
     }
 
     nonisolated static func isFresh(timestamp: TimeInterval, now: TimeInterval,

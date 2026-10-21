@@ -37,6 +37,7 @@ final class DepthRefinementEngine {
     private var sessionGeneration: Int = -1
 
     func attach(provider: ARSensorProvider) { self.provider = provider }
+    var isRunning: Bool { loopTask != nil }
 
     func start() {
         guard loopTask == nil else { return }
@@ -56,7 +57,7 @@ final class DepthRefinementEngine {
 
     private func tick() async {
         guard !isProcessing, let provider, provider.isRunning,
-              let frame = provider.snapshot(), frame.depthMap != nil else { return }
+              let frame = provider.cameraSnapshot(), frame.depthMap != nil else { return }
         if sessionGeneration != provider.sessionGeneration {
             previousRefined = nil; previousTranslation = nil
             sessionGeneration = provider.sessionGeneration

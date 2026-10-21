@@ -25,17 +25,18 @@ struct WearerModeView: View {
     var body: some View {
         ZStack {
             stateColor.opacity(0.18).ignoresSafeArea()
-            VStack(spacing: 16) {
-                header
-                statusCard
-                startStopButton
-                describeButton
-                settings
-                readiness
-                disclaimer
-                Spacer()
+            ScrollView {
+                VStack(spacing: 16) {
+                    header
+                    statusCard
+                    startStopButton
+                    describeButton
+                    settings
+                    readiness
+                    disclaimer
+                }
+                .padding(18)
             }
-            .padding(18)
         }
     }
 
@@ -47,10 +48,11 @@ struct WearerModeView: View {
                 .font(.title2.bold())
             Spacer()
             Button(action: onSwitchMode) {
-                Label("Developer", systemImage: "wrench.and.screwdriver")
+                Label("AI Vision", systemImage: "camera.viewfinder")
                     .font(.footnote)
             }
-            .accessibilityLabel("Switch to Developer Mode")
+            .accessibilityLabel("Show AI Vision tools")
+            .accessibilityIdentifier("assist.showVision")
         }
     }
 

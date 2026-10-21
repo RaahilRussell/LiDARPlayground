@@ -219,7 +219,7 @@ final class VisionInferenceEngine {
         guard let provider, provider.isRunning else {
             clearResults(); report(.notReady(.sessionNotRunning)); return
         }
-        guard let frame = provider.snapshot() else {
+        guard let frame = provider.cameraSnapshot() else {
             clearResults(); report(.notReady(.noFrame)); return
         }
         let generation = provider.sessionGeneration

@@ -6,6 +6,15 @@ results are recorded below. Physical checks still require a LiDAR iPhone/iPad
 and, for profiling/installing, a Mac with Xcode 26.5. This is a prototype:
 simulator results do not establish navigation safety.
 
+## Camera, LiDAR, and vision regression repair
+
+The subsequent repair restores direct access to the original tools and fixes
+shared sensor/processing shutdowns. Its changes and additional UI/lifecycle
+coverage are described in [REGRESSION_REPAIR.md](REGRESSION_REPAIR.md); current
+build and UI-test results are recorded in the pull request. The 123-test result
+below is historical evidence for the earlier feature implementation, not for
+this later repair.
+
 ## Automatic mapping, color, navigation, and OCR follow-up
 
 This follow-up adds continuous foreground checkpoints, color/keyframe capture,
@@ -34,7 +43,8 @@ a warning-free build.
       and later updates checkpoint about every 20 seconds when tracking permits.
       Confirm the screen remains awake while mapping and normal automatic sleep
       returns on pause/background.
-- [ ] Open Saved Places, an offline place, Text & Signs, Assist, and Developer.
+- [ ] Open Camera, every LiDAR and AI Vision tool, Saved Places, an offline
+      place, Text & Signs, and Assist.
       Verify automatic capture remains active, no second ARSession/capture
       session starts, and library refresh does not interrupt saving.
 - [ ] Pause explicitly, background/foreground and lock/unlock; the camera must
@@ -57,7 +67,9 @@ a warning-free build.
       Separately fill the navigation graph; only new path recording should stop.
       Pause/background during commit; completion must not unexpectedly restart
       the camera. Force disk failure and verify the final immutable capture and
-      last durable revision remain available for retry.
+      last durable revision remain available for retry, while camera, depth,
+      live mesh and CV remain usable. Retry Saving must preserve surfaces seen
+      after the failure; photo/text intake resumes after the segment commits.
 - [ ] Scan colored walls and small objects from multiple angles. Compare saved
       colors with the real surfaces; an object in front of a wall must not paint
       its color onto the wall. Confirm unobserved/low-confidence vertices remain

@@ -178,7 +178,7 @@ final class NavigationController {
         guard generation == manager.sessionGeneration, manager.runState == .running,
               !manager.isRelocalizing, (!requiresLocalization || manager.hasLocalizedMap),
               let frame = manager.session.currentFrame,
-              frame.timestamp == manager.lastFrameTimestamp,
+              manager.isCurrentWorldFrame(frame),
               ARSensorProvider.isFresh(timestamp: frame.timestamp, now: now),
               case .normal = frame.camera.trackingState else { return nil }
         return frame

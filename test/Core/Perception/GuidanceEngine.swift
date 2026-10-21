@@ -24,8 +24,13 @@ final class GuidanceEngine {
 
     var verbosity: Verbosity = .normal
     @ObservationIgnored var onWillStart: (() -> Void)?
+    @ObservationIgnored var activatePipelines: (() -> Void)?
+    @ObservationIgnored var deactivatePipelines: (() -> Void)?
     private(set) var running = false
     private(set) var statusText = "Stopped"
+    private(set) var navigationOwnsSpeech = false
+    private(set) var foregroundActive = true
+    var canSpeak: Bool { foregroundActive && !navigationOwnsSpeech }
 
     private unowned let speech: SpeechCoordinator
     private unowned let haptics: HapticCoordinator
@@ -70,20 +75,13 @@ final class GuidanceEngine {
         running = true
         speech.configureAudioIfNeeded()
         ar?.start()
-        vision.targetHz = 6          // modest rate — thermal/battery friendly
-        vision.start()
-        spatial.start()
-        fusion.start()
-        proximityDriver.demoMode = false
-        proximityDriver.source = .fusedObjects   // object-aware alerts, geometry fallback
-        proximityDriver.running = true
-        proximityDriver.start()
+        activatePipelines?()
         statusText = "Running"
         lastState = .clear
         lastRegion = nil
         lastLabel = nil
         lastHazardAnnouncement = 0
-        speech.speak("Guidance started.", priority: .high)
+        if canSpeak { speech.speak("Guidance started.", priority: .high) }
         loopTask = Task { [weak self] in await self?.loop() }
     }
 
@@ -91,18 +89,34 @@ final class GuidanceEngine {
         guard running else { return }
         running = false
         loopTask?.cancel(); loopTask = nil
-        proximityDriver.stop()
-        fusion.stop()
-        spatial.stop()
-        vision.stop()
-        proximity.reset()
+        // Another consumer may have joined after guidance started. The shared
+        // demand coordinator stops only pipelines that nobody still needs.
+        deactivatePipelines?()
         // Keep the single ARSession RUNNING — pausing/resuming it churns the camera
         // capture source (FigCaptureSourceRemote errors). Only background pauses it.
         statusText = "Stopped"
-        speech.speak("Guidance stopped.", priority: .high)
+        if canSpeak { speech.speak("Guidance stopped.", priority: .high) }
     }
 
     func toggle() { running ? stop() : start() }
+
+    /// Speech ownership is independent of live inference and haptic feedback.
+    func setNavigationSpeechActive(_ active: Bool) {
+        navigationOwnsSpeech = active
+        updateSuspensionStatus()
+    }
+
+    func setForegroundActive(_ active: Bool) {
+        foregroundActive = active
+        updateSuspensionStatus()
+    }
+
+    private func updateSuspensionStatus() {
+        guard running else { return }
+        if !foregroundActive { statusText = "Paused while app is inactive" }
+        else if navigationOwnsSpeech { statusText = "Route directions speaking · proximity feedback remains active" }
+        else { statusText = "Running"; lastState = .uncertain }
+    }
 
     // MARK: - Announcement loop
 
@@ -114,7 +128,10 @@ final class GuidanceEngine {
     }
 
     private func announce() {
-        guard ar?.runState == .running else { statusText = "Sensing paused"; return }
+        guard canSpeak else { updateSuspensionStatus(); return }
+        guard let ar, let frame = ar.session.currentFrame, ar.isCurrentWorldFrame(frame) else {
+            statusText = "Waiting for current sensor tracking"; return
+        }
         let state = proximity.currentState
         let event = proximity.lastEvent
         let distance = event?.distanceMeters
@@ -161,7 +178,7 @@ final class GuidanceEngine {
             }
         case .clear:
             if lastState != .clear, lastState != .uncertain, verbosity != .quiet {
-                speech.speak("Clear.", minRepeat: 4)
+                speech.speak("No nearby obstacle detected in the observed area.", minRepeat: 4)
             }
         }
         lastState = state
@@ -172,12 +189,12 @@ final class GuidanceEngine {
     // MARK: - On-demand description
 
     func describeSurroundings() {
+        guard canSpeak else { updateSuspensionStatus(); return }
         guard running else {
             speech.speak("Start guidance first.", priority: .high)
             return
         }
-        guard ar?.runState == .running, ar?.trackingIsNormal == true,
-              ar?.isRelocalizing == false else {
+        guard let ar, let frame = ar.session.currentFrame, ar.isCurrentWorldFrame(frame) else {
             speech.speak("Sensor tracking is unavailable. Please wait for tracking to recover.", priority: .high)
             return
         }

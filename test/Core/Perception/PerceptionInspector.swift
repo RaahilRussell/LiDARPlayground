@@ -49,12 +49,6 @@ final class PerceptionInspector {
     private(set) var previewProcessMs: Double?
     private(set) var log = EventLog()
 
-    // Pipelines this inspector itself started. Only these are stopped when the
-    // inspector stops or switches to demo; anything already running is left as is.
-    @ObservationIgnored private var ownsModel = false
-    @ObservationIgnored private var ownsSpatial = false
-    @ObservationIgnored private var ownsDriver = false
-
     // Demo
     private(set) var demoRunning = false
     private(set) var demoOutput: DemoStepOutput?
@@ -64,6 +58,10 @@ final class PerceptionInspector {
 
     private weak var provider: ARSensorProvider?
     private weak var system: PerceptionSystem?
+    private let modelConsumer = UUID()
+    private let proximityConsumer = UUID()
+    private(set) var runningModel = false
+    private(set) var runningSpatialProximity = false
     @ObservationIgnored private var liveTask: Task<Void, Never>?
     @ObservationIgnored private var demoTask: Task<Void, Never>?
     @ObservationIgnored private var analysisInFlight = false
@@ -92,11 +90,11 @@ final class PerceptionInspector {
         }
     }
 
-    /// Stops polling and any pipelines this inspector started.
+    /// View/background lifetime controls only polling and synthetic playback.
+    /// Explicit model/proximity toggles control the app-wide live pipelines.
     func stop() {
         liveTask?.cancel(); liveTask = nil
         stopDemo()
-        releaseOwnedPipelines()
     }
 
     /// Backgrounding: same as stop; the view restarts polling on return.
@@ -107,12 +105,12 @@ final class PerceptionInspector {
         source = newSource
         switch newSource {
         case .demo:
-            // Keep demo strictly apart from live inputs: halt live polling/pipelines.
+            // Demo has its own evaluator. Stop live polling, while preserving
+            // real sensing used by other app features.
             liveTask?.cancel(); liveTask = nil
-            releaseOwnedPipelines()
             metadata = nil
             previews = nil
-            log.append(origin: .demo, kind: .system, message: "Demo mode ON — synthetic data, live inputs paused",
+            log.append(origin: .demo, kind: .system, message: "Demo mode ON — displaying synthetic data; live pipelines unchanged",
                        at: CACurrentMediaTime())
         case .live:
             stopDemo()
@@ -128,44 +126,28 @@ final class PerceptionInspector {
 
     // MARK: - Live pipelines
 
-    var runningModel: Bool { system?.vision.isEnabled ?? false }
-    var runningSpatialProximity: Bool {
-        guard let system else { return false }
-        return system.spatial.isRunning && system.proximityDriver.running
-    }
-
-    /// Explicit user toggle. Starting claims ownership only if it wasn't already running.
+    /// An explicit inspector demand. Turning this off releases only this
+    /// consumer; Assist or another visible tool may still need the same engine.
     func setModelRunning(_ on: Bool) {
-        guard let vision = system?.vision, on != vision.isEnabled else { return }
+        guard let system, on != runningModel else { return }
         if on {
             guard source == .live else { return }
-            vision.start()
-            ownsModel = true
+            system.acquire(.vision, for: modelConsumer)
         } else {
-            vision.stop()
-            ownsModel = false
+            system.release(modelConsumer)
         }
+        runningModel = on
     }
 
     func setSpatialProximityRunning(_ on: Bool) {
         guard let system, on != runningSpatialProximity else { return }
         if on {
             guard source == .live else { return }
-            if !system.spatial.isRunning { system.spatial.start(); ownsSpatial = true }
-            if !system.proximityDriver.running { system.proximityDriver.start(); ownsDriver = true }
+            system.acquire([.spatial, .proximity], for: proximityConsumer)
         } else {
-            system.proximityDriver.stop()
-            system.spatial.stop()
-            ownsSpatial = false
-            ownsDriver = false
+            system.release(proximityConsumer)
         }
-    }
-
-    private func releaseOwnedPipelines() {
-        guard let system else { return }
-        if ownsModel { system.vision.stop(); ownsModel = false }
-        if ownsDriver { system.proximityDriver.stop(); ownsDriver = false }
-        if ownsSpatial { system.spatial.stop(); ownsSpatial = false }
+        runningSpatialProximity = on
     }
 
     // MARK: - Live polling
@@ -174,7 +156,7 @@ final class PerceptionInspector {
         guard source == .live, let provider, let system else { return }
         let now = CACurrentMediaTime()
 
-        if let frame = provider.snapshot() {
+        if let frame = provider.cameraSnapshot() {
             metadata = Self.metadata(of: frame, now: now)
             if lastTrackingNormal != frame.trackingIsNormal {
                 if lastTrackingNormal != nil {

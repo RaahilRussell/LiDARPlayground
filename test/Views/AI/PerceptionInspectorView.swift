@@ -37,7 +37,6 @@ struct PerceptionInspectorView: View {
         }
         .background(Theme.background)
         .onAppear {
-            if ar.runState == .idle { ar.start() }
             inspector.start()
         }
         .onDisappear { inspector.stop() }
@@ -59,7 +58,7 @@ struct PerceptionInspectorView: View {
                 }
                 .pickerStyle(.segmented)
                 if inspector.source == .demo {
-                    Label("DEMO — synthetic, deterministic data. Live inputs are paused.",
+                    Label("DEMO — synthetic data shown here. Live sensing in other tools is unchanged.",
                           systemImage: "theatermasks.fill")
                         .font(.caption).foregroundStyle(Theme.warn)
                 }
@@ -72,11 +71,13 @@ struct PerceptionInspectorView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Raw-frame previews (~4 Hz)", isOn: Binding(get: { inspector.previewsEnabled },
                                                                    set: { inspector.previewsEnabled = $0 }))
-                Toggle("Run YOLO model", isOn: Binding(get: { inspector.runningModel },
+                Toggle("Keep YOLO running", isOn: Binding(get: { inspector.runningModel },
                                                        set: { inspector.setModelRunning($0) }))
-                Toggle("Run spatial + proximity pipeline", isOn: Binding(
+                Toggle("Keep spatial + proximity running", isOn: Binding(
                     get: { inspector.runningSpatialProximity },
                     set: { inspector.setSpatialProximityRunning($0) }))
+                Text("These requests stay active across screens until turned off. Other features can also keep the shared pipelines running.")
+                    .font(.caption2).foregroundStyle(.secondary)
                 Text("The live proximity pipeline drives haptics when they are enabled in the Haptics tab (currently \(perception.haptics.enabled ? "ON" : "OFF")). Experimental prototype — not a navigation aid.")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -26,14 +26,18 @@ iPhones and iPad Pro models support the same mapping APIs.
 5. Select your **iPhone 15 Pro Max** as the run destination and press **Run**.
 
 > **Simulator note:** ARKit world tracking and LiDAR depth do **not** exist in the
-> Simulator. Live mapping shows an unsupported state; storage and algorithm tests
-> can run there. Physical scanning and relocalization still require on-device
+> Simulator. Live mapping shows an unsupported state; navigation through the app,
+> storage, and algorithm tests can run there. Physical scanning and relocalization still require on-device
 > verification. See [device validation](docs/DEVICE_VALIDATION.md).
 
 ## Mapping and saved places
 
-The app opens in **Maps**. Use the top selector to reach **Assist** or the
-existing **Developer** tools.
+The app opens in **Camera**. Five visible destinations provide direct access to
+**Camera**, **LiDAR**, **AI Vision**, **Maps**, and **Assist**. Open **Maps** for
+the live map, saved places, routes, and text observations. Automatic mapping
+continues while using other tools; switching screens does not pause the shared
+camera or cancel an active route. A map-saving error also appears outside Maps
+with an **Open Maps** action for reviewing the error and retrying the save.
 
 1. In **Live Map**, allow camera access and move slowly around nearby textured
    surfaces. Camera/IMU world tracking and LiDAR scene reconstruction share one
@@ -87,8 +91,10 @@ remain individually viewable rather than being stitched into one offline scene.
 Open the latest segment to restore the latest route graph. **New Map**, or a new
 place after failed launch recognition, starts a separate origin and route graph.
 When path recording reaches its own capacity, it stops adding nodes while
-mapping and existing destinations remain available. Failed segment saves pause
-continuation and retain the current scan for retry. Existing uncoloured saved
+mapping and existing destinations remain available. Failed segment saves retain
+their checkpoint for **Retry Saving**, while the camera, LiDAR mesh, and computer
+vision remain available. Photo/text intake waits for storage recovery, and the
+retry includes surfaces observed since the failure. Existing uncoloured saved
 maps remain readable. Missing surfaces and grey colour samples remain unknown
 observations.
 
@@ -100,10 +106,12 @@ tests on macOS; this does not replace iPhone testing.
 
 ---
 
-## Developer sensor tools (5 tabs + a persistent status strip)
+## Camera and LiDAR tools
 
-The status strip (above every tab) shows: **tracking · FPS · depth on/off ·
-valid-depth % · thermal state**.
+**Camera** opens the rear-camera view directly. **LiDAR** offers **Depth**,
+**Point Cloud**, **3D Mesh**, and **Data** in its tool row. The selected LiDAR tool
+is remembered when moving to another destination and back. The status strip
+shows **tracking · FPS · depth on/off · valid-depth % · thermal state**.
 
 | Tab | Feature |
 |-----|---------|
@@ -113,7 +121,7 @@ valid-depth % · thermal state**.
 | **3D Mesh** | ARKit scene reconstruction: wireframe / solid / classification coloring, anchor + vertex/face counts, world axes, tracked-camera marker, Reset Map. |
 | **Data** | Live pose (local X/Y/Z + orientation), displacement, top-down movement trail, intrinsics & transform matrices, RGB/depth dimensions, timestamps, example depth grid + 3D points (all with plain-English explanations), and **Record & Export**. |
 
-### Record & Export (Data tab)
+### Record & Export (LiDAR → Data)
 A **3-second**, memory-bounded capture (≤ 20k points), exported via the iOS share
 sheet so you can AirDrop/save to your Mac:
 - `depth_matrix.csv` — depth buffer in metres
@@ -123,6 +131,21 @@ sheet so you can AirDrop/save to your Mac:
 
 This three-second diagnostic export recording starts only on an explicit tap.
 Automatic mapping, camera keyframes, and local OCR are separate foreground features.
+
+### AI Vision and Assist
+
+**AI Vision** opens **Live AI** by default. Scroll its tool row horizontally to
+reach **Fused**, **Depth Lab**, **Fusion**, **Haptics**, **Benchmarks**, and
+**Inspector**. All original tools remain available, and the selected tool is
+remembered when returning from another destination. Live AI exposes the camera
+and model controls; Fused combines model detections with spatial depth. The
+remaining tools inspect depth filters, spatial results, haptic patterns,
+performance, and raw perception data.
+
+**Assist** provides the large controls for experimental spoken and haptic
+guidance, with a direct shortcut back to AI Vision. Switching destinations does
+not cancel a walking route; an active route offers **Show route** and **Stop**
+outside Maps.
 
 ---
 

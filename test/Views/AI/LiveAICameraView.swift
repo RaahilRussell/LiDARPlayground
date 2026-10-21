@@ -15,6 +15,7 @@ struct LiveAICameraView: View {
     @Environment(PerceptionSystem.self) private var perception
 
     private var vision: VisionInferenceEngine { perception.vision }
+    @State private var pipelineConsumer = UUID()
 
     var body: some View {
         ZStack {
@@ -34,11 +35,10 @@ struct LiveAICameraView: View {
             .padding(10)
         }
         .onAppear {
-            if ar.runState == .idle { ar.start() }
             vision.refreshModelPresence()
-            vision.start()
+            perception.acquire(.vision, for: pipelineConsumer)
         }
-        .onDisappear { vision.stop() }
+        .onDisappear { perception.release(pipelineConsumer) }
     }
 
     // MARK: - Camera + detection overlay

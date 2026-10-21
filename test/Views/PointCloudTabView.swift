@@ -35,7 +35,7 @@ struct PointCloudTabView: View {
                 .padding(10)
             }
         }
-        .task(id: "\(worldSpace)-\(density)-\(highConfidenceOnly)") { await loop() }
+        .task(id: "\(worldSpace)-\(density)-\(highConfidenceOnly)-\(ar.sessionGeneration)-\(ar.runState.rawValue)") { await loop() }
     }
 
     private var controls: some View {
@@ -67,10 +67,13 @@ struct PointCloudTabView: View {
     }
 
     private func loop() async {
+        holder.update(PointCloud()); pointCount = 0
         while !Task.isCancelled {
-            if ar.runState == .running,
-               let frame = ar.session.currentFrame,
+            if let frame = ar.session.currentFrame,
+               worldSpace ? ar.isCurrentWorldFrame(frame) : ar.isCurrentFrame(frame),
                let depth = frame.smoothedSceneDepth ?? frame.sceneDepth {
+                let generation = ar.sessionGeneration
+                let timestamp = frame.timestamp
                 let input = PointCloudInput(
                     depth: depth.depthMap,
                     confidence: depth.confidenceMap,
@@ -86,9 +89,16 @@ struct PointCloudTabView: View {
                 let cloud = await Task.detached(priority: .userInitiated) {
                     PointCloudGenerator.generate(input)
                 }.value
-
+                guard !Task.isCancelled else { return }
+                guard generation == ar.sessionGeneration, ar.isCurrentObservation(timestamp: timestamp),
+                      !worldSpace || (ar.trackingIsNormal && !ar.isRelocalizing) else {
+                    holder.update(PointCloud()); pointCount = 0
+                    continue
+                }
                 holder.update(cloud)
                 pointCount = cloud.count
+            } else {
+                holder.update(PointCloud()); pointCount = 0
             }
             try? await Task.sleep(for: .milliseconds(150))
         }

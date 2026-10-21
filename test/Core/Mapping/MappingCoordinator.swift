@@ -44,9 +44,14 @@ final class MappingCoordinator {
     private var nextSegmentName: String?
     private var segmentClosing = false
     private var launchRestorePending = false
-    private var deferredRestore: (id: UUID, automatic: Bool)?
+    private var deferredRestore: (id: UUID, automatic: Bool, pauseRevision: Int)?
     private var pendingSegmentCapture: MappingSessionCapture?
     private var pendingSegmentGeneration: Int?
+    private var pendingSegmentNeedsRefresh = false
+
+    /// Saving and live sensing have independent failure recovery. A storage
+    /// error must not turn off the shared camera used by CV and LiDAR diagnostics.
+    var automaticSaveNeedsAttention: Bool { automaticSaveBlocked }
 
     var activeMap: SavedMapMetadata? {
         activeGeneration == manager.sessionGeneration ? storedActiveMap : nil
@@ -82,9 +87,10 @@ final class MappingCoordinator {
         guard !automaticStarted else { return }
         automaticStarted = true
         launchRestorePending = true
-        guard manager.supportsWorldTracking, manager.supportsMesh else {
+        guard manager.supportsWorldTracking else {
             launchRestorePending = false
-            automaticState = "Automatic mapping requires a LiDAR iPhone or iPad."
+            manager.start()
+            automaticState = "Live sensing requires an ARKit iPhone or iPad."
             return
         }
         // A child library view may be refreshing at the same time as app setup.
@@ -107,7 +113,7 @@ final class MappingCoordinator {
         guard foregroundActive, launchRestorePending, !isBusy else { return }
         launchRestorePending = false
         if !manager.isUserPaused {
-            if let latest = maps.max(by: { $0.updatedAt < $1.updatedAt }) {
+            if manager.supportsMesh, let latest = maps.max(by: { $0.updatedAt < $1.updatedAt }) {
                 await restoreMap(id: latest.id, automatic: true)
                 if activeMap == nil, manager.errorMessage == nil, !manager.isUserPaused,
                    !isBusy, foregroundActive, deferredRestore == nil {
@@ -132,7 +138,9 @@ final class MappingCoordinator {
             else { await prepareInitialSessionIfActive() }
             if let pending = deferredRestore, !isBusy, foregroundActive {
                 deferredRestore = nil
-                await restoreMap(id: pending.id, automatic: pending.automatic)
+                if pending.pauseRevision == manager.pauseRevision {
+                    await restoreMap(id: pending.id, automatic: pending.automatic)
+                }
             }
             startConsumersIfActive()
         } else {
@@ -162,10 +170,20 @@ final class MappingCoordinator {
         startConsumersIfActive()
     }
 
+    func retryAutomaticSave() {
+        automaticSaveBlocked = false
+        lastAttemptAt = nil
+        lastSavedAt = nil
+        errorMessage = nil
+        automaticState = "Retrying the map checkpoint when tracking is ready"
+        // This action does not override an explicit camera pause.
+        startConsumersIfActive()
+    }
+
     private func startConsumersIfActive() {
         UIApplication.shared.isIdleTimerDisabled = foregroundActive &&
             manager.runState == .running && !manager.isUserPaused
-        guard foregroundActive, !manager.isUserPaused else { return }
+        guard foregroundActive, manager.runState == .running, !manager.isUserPaused else { return }
         navigation.startRecording()
         if !segmentClosing && pendingSegmentCapture == nil { textRecognition.start() }
     }
@@ -188,6 +206,10 @@ final class MappingCoordinator {
             return
         }
         startConsumersIfActive()
+        guard manager.supportsMesh else {
+            automaticState = "Camera and computer vision are available. Saving 3D surfaces requires LiDAR."
+            return
+        }
         if manager.isRelocalizing {
             automaticState = manager.relocalizationGuidance
             if manager.relocalizationTimedOut, automaticRestoreAttempt, !isBusy {
@@ -276,7 +298,7 @@ final class MappingCoordinator {
 
     func saveMap(name: String) async {
         guard pendingSegmentCapture == nil else {
-            errorMessage = "A storage segment is waiting for its final checkpoint. Tap Resume Mapping to retry it and continue."
+            errorMessage = "A storage segment is waiting for its final checkpoint. Tap Retry Saving to retry it and continue."
             return
         }
         _ = await performSave(name: name, automatic: false)
@@ -292,13 +314,27 @@ final class MappingCoordinator {
                 throw MappingCoordinatorError.invalidName
             }
             let capture: MappingSessionCapture
-            if closeSegment, pendingSegmentGeneration == generation, let pendingSegmentCapture {
+            if closeSegment, pendingSegmentGeneration == generation,
+               !pendingSegmentNeedsRefresh, let pendingSegmentCapture {
                 capture = pendingSegmentCapture
             } else {
-                capture = try await manager.captureMappingSnapshot(holdReconstructionAfterCapture: closeSegment)
+                let latest = try await manager.captureMappingSnapshot(holdReconstructionAfterCapture: closeSegment)
+                if closeSegment, pendingSegmentGeneration == generation, let pendingSegmentCapture {
+                    var geometry = try Self.merging(baseline: pendingSegmentCapture.geometry,
+                        current: latest.geometry, excluding: manager.removedMeshAnchorIDs)
+                    // Both snapshots belong to this same live run; its current
+                    // trail already contains the earlier observations.
+                    geometry.trail = latest.geometry.trail
+                    capture = MappingSessionCapture(geometry: geometry,
+                        worldMapData: latest.worldMapData,
+                        referenceImageData: latest.referenceImageData)
+                } else {
+                    capture = latest
+                }
                 if closeSegment {
                     pendingSegmentCapture = capture
                     pendingSegmentGeneration = generation
+                    pendingSegmentNeedsRefresh = false
                 }
             }
             await colorCapture.flush()
@@ -355,19 +391,27 @@ final class MappingCoordinator {
             return true
         } catch {
             guard isCurrent(operation), generation == manager.sessionGeneration else { return false }
+            if closeSegment {
+                pendingSegmentNeedsRefresh = pendingSegmentCapture != nil
+                manager.resumeReconstructionAfterCheckpointFailure()
+            }
             if automatic, let sessionError = error as? MappingSessionError,
                sessionError == .notReady || sessionError == .changedSession || sessionError == .noSurface {
                 // A moving camera can briefly lose quality; retry with backoff.
                 automaticState = manager.relocalizationGuidance
             } else {
                 report(error, operation: operation)
-                if automatic {
-                    automaticSaveBlocked = true
-                    pauseAutomaticMapping()
-                    errorMessage = "Automatic saving stopped: \(error.localizedDescription) Your previous saved maps are safe. Resume to retry before starting another place."
-                }
+                if automatic { handleAutomaticSaveFailure(error) }
             }
             return false
+        }
+    }
+
+    func handleAutomaticSaveFailure(_ error: Error) {
+        automaticSaveBlocked = true
+        errorMessage = "Automatic saving needs attention: \(error.localizedDescription) Live camera, depth, and computer vision can continue. Your previous saved maps are safe. Tap Retry Saving to retry the checkpoint."
+        if pendingSegmentCapture != nil {
+            errorMessage = "Automatic saving needs attention: \(error.localizedDescription) The previous snapshot is retained while live mesh, depth, and computer vision continue. Photo and text capture wait for this checkpoint. Tap Retry Saving to save the updated surfaces."
         }
     }
 
@@ -387,12 +431,17 @@ final class MappingCoordinator {
 
     func resumeMap(id: UUID) async {
         let generation = manager.sessionGeneration
+        let pauseRevision = manager.pauseRevision
         let closesPending = pendingSegmentCapture != nil && pendingSegmentGeneration == generation
         if activeMap?.id != id, manager.canSaveWorldMap || closesPending {
             let saved = await performSave(name: activeMap?.name ?? nextSegmentName ??
                 AutomaticMappingPolicy.automaticName(at: Date()), automatic: false,
                 closeSegment: closesPending)
             guard saved, generation == manager.sessionGeneration else { return }
+        }
+        guard manager.pauseRevision == pauseRevision else {
+            statusMessage = "Revisit canceled because the camera was paused."
+            return
         }
         await restoreMap(id: id, automatic: false)
     }
@@ -401,20 +450,26 @@ final class MappingCoordinator {
         guard let operation = beginOperation() else { return }
         defer { finishOperation(operation) }
         let generation = manager.sessionGeneration
+        let pauseRevision = manager.pauseRevision
         do {
             let archive = try await store.load(id: id)
             guard isCurrent(operation), generation == manager.sessionGeneration else { return }
             let worldMap = try await ARSessionManager.decodeWorldMap(archive.worldMapData)
             guard isCurrent(operation), generation == manager.sessionGeneration else { return }
+            guard manager.pauseRevision == pauseRevision else {
+                statusMessage = "Revisit canceled because the camera was paused while the place was loading."
+                return
+            }
             guard !automatic || !manager.isUserPaused else { return }
             guard foregroundActive else {
-                deferredRestore = (id, automatic)
+                deferredRestore = (id, automatic, pauseRevision)
                 statusMessage = "Revisit will continue when the app returns to the foreground."
                 return
             }
             try manager.restoreWorldMap(worldMap)
             pendingSegmentCapture = nil
             pendingSegmentGeneration = nil
+            pendingSegmentNeedsRefresh = false
             segmentClosing = false
             storedActiveMap = archive.metadata
             activeGeneration = manager.sessionGeneration
@@ -497,6 +552,7 @@ final class MappingCoordinator {
         activeGeneration = manager.sessionGeneration
         pendingSegmentCapture = nil
         pendingSegmentGeneration = nil
+        pendingSegmentNeedsRefresh = false
         nextPlaceID = previous.placeID ?? previous.id
         nextSegmentIndex = previous.segmentIndex + 1
         let oldSuffix = " · Part \(previous.segmentIndex + 1)"
@@ -524,6 +580,7 @@ final class MappingCoordinator {
         launchRestorePending = false
         pendingSegmentCapture = nil
         pendingSegmentGeneration = nil
+        pendingSegmentNeedsRefresh = false
         automaticRestoreAttempt = false
         automaticSaveBlocked = false
         requiresPlaceChoice = false

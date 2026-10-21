@@ -30,6 +30,7 @@ struct FusedPerceptionView: View {
     @State private var maskOpacity: Double = 0.45
     @State private var showMask = true
     @State private var centerMeters: Float?
+    @State private var pipelineConsumer = UUID()
 
     var body: some View {
         ZStack {
@@ -57,15 +58,11 @@ struct FusedPerceptionView: View {
             }
         }
         .onAppear {
-            if ar.runState == .idle { ar.start() }
-            vision.start(); fusion.start(); spatial.start()
-            driver.source = .fusedObjects
-            driver.running = true
-            driver.start()
+            if !driver.running { driver.source = .fusedObjects }
+            driver.demoMode = false
+            perception.acquire(.guidance, for: pipelineConsumer)
         }
-        .onDisappear {
-            driver.stop(); spatial.stop(); fusion.stop(); vision.stop()
-        }
+        .onDisappear { perception.release(pipelineConsumer) }
         .task { await trackCenterDistance() }
     }
 
@@ -331,11 +328,11 @@ struct FusedPerceptionView: View {
 
     private func trackCenterDistance() async {
         while !Task.isCancelled {
-            if let frame = perception.provider?.snapshot(),
+            if let frame = perception.provider?.cameraSnapshot(),
                let depth = frame.smoothedDepthMap ?? frame.depthMap {
                 centerMeters = DepthProcessing.sampleDistance(depth: depth,
                                                               normalizedPoint: CGPoint(x: 0.5, y: 0.5))
-            }
+            } else { centerMeters = nil }
             try? await Task.sleep(for: .milliseconds(120))
         }
     }

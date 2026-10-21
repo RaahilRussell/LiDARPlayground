@@ -29,7 +29,8 @@ every 20 seconds; transient tracking failures use a five-second retry backoff.
 Saving requires normal tracking, extending/mapped world-map quality, a fresh
 accepted frame, and nonempty LiDAR surfaces. Save/load/delete/rename operations
 are serialized. Operation tokens and session generations reject stale work.
-Persistent storage errors stop automatic mapping and expose a Resume retry.
+Persistent storage errors suspend automatic save retries and expose Retry Saving.
+They do not pause the shared camera, depth, computer vision, or live mesh.
 
 The existing atomic manifest/revision store remains the durable boundary. A
 checkpoint includes geometry, calibrated photos, navigation, text, signs, a
@@ -54,9 +55,11 @@ protect in-memory work and decoding, not the number of saved places on disk.
 For rollover, the coordinator freezes photo/text intake, copies a final valid
 geometry snapshot, temporarily disables only scene reconstruction, and commits
 the archive. The same camera/IMU/depth session and path recording continue.
-The final immutable capture remains in memory if writing fails; automatic
-mapping then pauses visibly and Resume retries that capture. Only a successful
-durable save permits reconstruction/photo/text caches to rotate.
+The final immutable capture remains in memory if writing fails. Live scene
+reconstruction is re-enabled in the same world, while bounded photo/text intake
+waits for Retry Saving. Retry refreshes the checkpoint with newly observed
+surfaces and retains earlier chunks. Only a successful durable save permits
+reconstruction/photo/text caches to rotate.
 
 Reconstruction restarts using `resetSceneReconstruction`, without `resetTracking`
 or `removeExistingAnchors`. Apple specifies that this option removes the mesh

@@ -41,7 +41,7 @@ struct MeshTabView: View {
         }
         .padding(10)
         .onAppear { if holder == nil { holder = MeshSceneHolder(manager: ar) } }
-        .task(id: mode) { await refreshLoop() }
+        .task(id: "\(mode.rawValue)-\(ar.sessionGeneration)-\(ar.runState.rawValue)") { await refreshLoop() }
     }
 
     private var controls: some View {
@@ -92,11 +92,16 @@ struct MeshTabView: View {
     }
 
     private func refreshLoop() async {
+        holder?.refresh(anchors: [], mode: mode)
         while !Task.isCancelled {
-            if ar.runState == .running, let frame = ar.session.currentFrame {
-                let meshAnchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+            if let frame = ar.session.currentFrame, ar.isCurrentWorldFrame(frame) {
+                let meshAnchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }.filter {
+                    ar.currentSegmentMeshIDs?.contains($0.identifier) ?? true
+                }
                 holder?.refresh(anchors: meshAnchors, mode: mode)
                 holder?.setCameraPose(frame.camera.transform)
+            } else {
+                holder?.refresh(anchors: [], mode: mode)
             }
             try? await Task.sleep(for: .milliseconds(400)) // throttle expensive rebuilds
         }
