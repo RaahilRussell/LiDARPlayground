@@ -19,6 +19,7 @@ enum AppMode: String, CaseIterable, Identifiable {
 
 struct AppRootView: View {
     @Environment(PerceptionSystem.self) private var perception
+    @Environment(MappingCoordinator.self) private var mapping
     @State private var mode: AppMode = .mapping
 
     var body: some View {
@@ -31,6 +32,16 @@ struct AppRootView: View {
             .padding(.vertical, 8)
             .background(Theme.panel)
 
+            if mapping.navigation.routeActive && mode != .mapping {
+                HStack {
+                    Text(mapping.navigation.instruction).font(.callout.bold())
+                    Spacer()
+                    Button("Show route") { mode = .mapping }
+                    Button("Stop") { mapping.navigation.cancelNavigation() }
+                }
+                .padding(10).background(Theme.panel)
+            }
+
             switch mode {
             case .mapping:
                 MappingHomeView()
@@ -42,7 +53,7 @@ struct AppRootView: View {
         }
         .tint(Theme.accent)
         .onChange(of: mode) { _, newMode in
-            if newMode == .mapping {
+            if newMode == .mapping && !mapping.navigation.routeActive {
                 perception.pauseForMapping()
             } else if newMode != .wearer {
                 perception.guidance.stop()

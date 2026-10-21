@@ -36,17 +36,25 @@ struct testApp: App {
                 .environment(mapping)
                 .environment(perception)
                 .preferredColorScheme(.dark)
-                .onAppear { perception.configure(with: ar) }
+                .onAppear {
+                    perception.configure(with: ar)
+                    mapping.navigation.configureSpeech(perception.speech)
+                    mapping.navigation.onRouteWillStart = { perception.pauseForMapping() }
+                    perception.guidance.onWillStart = { mapping.navigation.cancelNavigation() }
+                    Task {
+                        await mapping.setForegroundActive(scenePhase == .active)
+                    }
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             // Cleanly handle backgrounding: ARKit interrupts the session when we
             // leave the foreground, so we mirror that and resume on return.
             switch phase {
             case .active:
-                ar.handleBecameActive()
+                Task { await mapping.setForegroundActive(true) }
             case .background, .inactive:
                 perception.handleLeftForeground()
-                ar.handleResignActive()
+                Task { await mapping.setForegroundActive(false) }
             @unknown default:
                 break
             }

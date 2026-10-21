@@ -45,7 +45,9 @@ extension MapMeshSnapshot {
             }
             indices.append(value)
         }
-        let snapshot = MapMeshSnapshot(id: anchor.identifier, vertices: positions, triangleIndices: indices)
+        let transform = anchor.transform
+        let snapshot = MapMeshSnapshot(id: anchor.identifier, vertices: positions, triangleIndices: indices,
+            anchorTransform: (0..<4).flatMap { column in (0..<4).map { transform[column][$0] } })
         try SavedMapGeometry(meshes: [snapshot], trail: []).validate()
         return snapshot
     }

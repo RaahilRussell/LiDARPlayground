@@ -1,8 +1,10 @@
 # LiDARPlayground
 
 An educational **mapping and sensor laboratory** for the iPhone's LiDAR scanner,
-camera, and motion tracking. Scan and save places, revisit their reconstructed
-surfaces in 3D, or return in person to relocalize and continue a scan. The app
+camera, and motion tracking. Map and save places automatically, revisit their
+camera-coloured surfaces and photos in 3D, or return in person to relocalize and
+follow a previously walked path. Local text recognition retains signs and text
+observations alongside each map. The app
 also contains developer diagnostics and experimental assistive feedback; it is
 not a production navigation app.
 
@@ -34,26 +36,53 @@ The app opens in **Maps**. Use the top selector to reach **Assist** or the
 existing **Developer** tools.
 
 1. In **Live Map**, allow camera access and move slowly around nearby textured
-   surfaces. The camera/IMU world tracker and LiDAR scene reconstruction share
-   one AR session. Tracking and map quality must be ready before saving.
-2. Tap **Save Place**, name the scan, and wait for confirmation. **Save Changes**
-   updates that place; **New Map** starts a separate scan after confirming that
-   unsaved work can be discarded.
-3. Open **Saved Places** to pause the camera and browse local scans. Tap a saved
-   place to open its 3D viewer. Drag to orbit, pinch to zoom, use two fingers to
-   pan, toggle wireframe, or tap **Fit map**.
-   Each row also offers rename and delete. Viewing works away from the location.
-4. At the original location, open a saved place and choose **Revisit & Continue
-   Mapping**. Match its reference photo. Stored surfaces appear in the camera
-   view only after relocalization succeeds; then extend the scan and save again.
-   If recognition takes too long, follow the guidance or cancel to start fresh.
+   surfaces. Camera/IMU world tracking and LiDAR scene reconstruction share one
+   AR session. A usable map saves automatically, then checkpoints about every
+   20 seconds while tracking and map quality allow it. **Name & Save Now** or
+   **Save Now** makes an immediate checkpoint. Rename a place in the library.
+2. Mapping continues across the app's screens while the app is active. Use
+   **Pause Mapping** to stop sensing and **Resume Mapping** to continue. Moving
+   to the background suspends camera work; this does not record with the phone
+   locked or another app open. Work since the last successful checkpoint can be
+   lost if the process is terminated. **New Map** explicitly starts fresh.
+3. **Saved Places** opens local scans. In the 3D viewer, drag to orbit, pinch to
+   zoom, use two fingers to pan, toggle wireframe, or tap **Fit map**. Surfaces
+   retain real camera colours where a depth-validated sample exists; grey means
+   colour was not observed. **Photos** shows retained camera keyframes. Orange
+   markers locate recognized text; green markers identify named destinations.
+   The viewer itself uses no camera or AR session. Pause mapping to browse
+   without live sensing. Each library row also offers rename and delete.
+4. At launch the app tries to recognize the latest saved place. At an earlier
+   place, select it and choose **Revisit & Continue Mapping**. Match its reference
+   photo. Saved overlays and directions become available only after tracking
+   confirms the saved coordinate space. If automatic recognition times out, the
+   app preserves the old map and starts a separate new place.
+5. Walk the connections you want to use, enter a destination name, and tap
+   **Mark here**. Choose **Go to …** or **Return to path start** for visual and
+   spoken turn guidance. Keep the phone facing the direction of travel. Routing
+   follows continuous recorded paths; tracking gaps, large jumps, and height
+   changes break continuity. It cannot invent a route through unvisited space,
+   join separate segments, confirm obstacle clearance, or replace a mobility aid.
+6. Open **Text & Signs** to inspect local OCR observations, their image evidence,
+   and detected arrow symbols or shapes. OCR runs at approximately one frame per
+   second while mapping is active. Reliable depth places a text mark in the map;
+   otherwise it remains an image observation. A sign arrow describes its image,
+   not a verified world bearing, floor change, or walkable route.
 
 Each saved place contains a securely archived `ARWorldMap`, independent copied
-triangle geometry, a camera trail, a reference photo when available, and versioned metadata.
-Files stay in local Application Support. Writes commit a complete revision
+triangle geometry and vertex colours, calibrated JPEG keyframes, the camera
+trail, recorded navigation graph and labels, text/sign observations, a reference
+photo when available, and versioned metadata. Files stay in local Application
+Support; colour sampling and OCR run on device. Writes commit a complete revision
 before replacing the manifest, so a failed save preserves the previous version.
-Scans are bounded to 750,000 vertices and 1,500,000 triangles; split larger areas
-into separate places. Missing surfaces are unknown, not evidence of free space.
+
+Long scans automatically checkpoint and continue in a new segment before the
+working mesh, path, image, or text budget fills. A segment has its own coordinate
+space and its own localization map; shared place metadata groups related
+segments but does not align their geometry or connect their paths. Failed
+segment saves pause continuation and retain the current scan for retry. Existing
+uncoloured saved maps remain readable. Missing surfaces and grey colour samples
+remain unknown observations.
 
 See the [implementation plan](docs/MAPPING_PLAN.md),
 [architecture review](docs/MAPPING_ARCHITECTURE.md), and
@@ -124,10 +153,16 @@ point_world = camera.transform * point_cam  // world space
   `@MainActor`), injected through the SwiftUI environment. No tab ever creates a
   second session; AR views attach to the shared one and the manager stays the
   single `ARSessionDelegate`.
-- Per-frame delegate work is lightweight (runs on the main queue, as ARKit
-  delivers it). Heavy pixel work (heatmaps, point clouds, confidence %) runs on
+- Per-frame delegate work runs on the main queue. Heavy pixel work (heatmaps,
+  point clouds, confidence, map colours, keyframe encoding, local OCR) runs on
   **detached background tasks** and is **throttled** (depth ~12 Hz, point cloud
-  ~7 Hz, mesh rebuild ~2.5 Hz).
+  ~7 Hz, mesh rebuild ~2.5 Hz, map colours ~2 Hz, OCR ~1 Hz). At most one colour
+  worker retains sensor buffers. Camera keyframes require time and viewpoint
+  changes; normal colour samples only fill unseen vertices.
+- Colour projection uses the captured frame's native sensor orientation,
+  intrinsics, and camera pose. Matching LiDAR depth and medium/high confidence
+  reject occluded or unreliable samples. Anchor-local spatial cells preserve
+  valid observations when ARKit reorders or refines mesh vertices.
 - Feature-support checks gate every capability (`supportsSceneDepth`,
   `supportsSceneReconstruction`, …).
 - Handles session interruptions, backgrounding/foregrounding, nil frames, and
@@ -153,6 +188,16 @@ point_world = camera.transform * point_cam  // world space
 - [ ] Data: pose numbers change as you move; trail draws; displacement grows; matrices populate; example depths look sane.
 - [ ] Export: record → share sheet → files save to Mac; PLY opens in a 3D viewer.
 - [ ] Background the app and return — session resumes cleanly.
+- [ ] Mapping saves automatically; reopening recognizes the same room before
+      showing saved overlays or enabling directions.
+- [ ] Coloured objects match the saved surface and gallery; occluded surfaces
+      do not inherit foreground colours; missing confidence leaves grey areas.
+- [ ] Label two locations along a walked route, follow directions both ways,
+      and confirm a tracking gap or separate map segment does not create a shortcut.
+- [ ] Text and arrow evidence matches the sign; text without reliable depth
+      has no invented world marker; OCR runs locally with networking unavailable.
+- [ ] Force a segment rollover and a save failure; earlier segments and all
+      current photos/text survive, and continuation waits for a successful save.
 
 ---
 
