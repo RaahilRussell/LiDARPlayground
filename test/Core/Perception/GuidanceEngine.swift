@@ -120,6 +120,7 @@ final class GuidanceEngine {
         let distance = event?.distanceMeters
         let region = event?.region
         let label = event?.triggeringLabel
+        let height = event?.obstacleHeight
         let now = CACurrentMediaTime()
         statusText = "Running — \(state.rawValue)"
         // Bearing can wobble between adjacent buckets while the user turns. A
@@ -142,14 +143,14 @@ final class GuidanceEngine {
             }
         case .near:
             if (state != lastState || hazardChanged) && canAnnounceHazard {
-                let name = label ?? "obstacle"
+                let name = label ?? height?.spokenName ?? "obstacle"
                 speech.speak("\(name.capitalized) \(direction(region)), \(distancePhrase(distance)).",
                              priority: .high, minRepeat: 1.8)
                 lastHazardAnnouncement = now
             }
         case .caution:
             if (state != lastState || hazardChanged) && canAnnounceHazard && verbosity != .quiet {
-                let name = label ?? "object"
+                let name = label ?? height?.spokenName ?? "object"
                 let verb = region == .left || region == .right ? "Passing" : "Ahead"
                 speech.speak("\(verb): \(name), \(direction(region)), \(distancePhrase(distance)).",
                              minRepeat: 3)
@@ -189,7 +190,7 @@ final class GuidanceEngine {
             let name = describeRegionName(region)
             if let zone = hazardMap.zones.first(where: { $0.region == region }) {
                 let label = zone.label ?? "obstacle"
-                parts.append("\(name): \(label) at \(distancePhrase(zone.distance))")
+                parts.append("\(name): \(label), \(zone.height.spokenName) at \(distancePhrase(zone.distance))")
             } else {
                 parts.append("\(name): no confirmed observation")
             }

@@ -27,6 +27,7 @@ final class MappingCoordinator {
 
     private let manager: ARSessionManager
     private let store: MapStore
+    private weak var perception: PerceptionSystem?
     private var operationID = UUID()
     private var activeGeneration: Int?
     private var requiresRelocalization = false
@@ -47,6 +48,7 @@ final class MappingCoordinator {
     private var deferredRestore: (id: UUID, automatic: Bool)?
     private var pendingSegmentCapture: MappingSessionCapture?
     private var pendingSegmentGeneration: Int?
+    private var restoredPerceptionHazards: [SavedPerceptionHazard] = []
 
     var activeMap: SavedMapMetadata? {
         activeGeneration == manager.sessionGeneration ? storedActiveMap : nil
@@ -74,6 +76,12 @@ final class MappingCoordinator {
             self.colorCapture.observe(frame: frame, generation: generation,
                                       eligibleAnchorIDs: self.manager.currentSegmentMeshIDs)
         }
+    }
+
+    /// Connects mapping to the already-created perception system. This keeps one
+    /// ARSession while allowing mapping saves to include fused height results.
+    func attach(perception: PerceptionSystem) {
+        self.perception = perception
     }
 
     /// Called once by the application, independent of whichever screen is open.
@@ -166,6 +174,7 @@ final class MappingCoordinator {
         UIApplication.shared.isIdleTimerDisabled = foregroundActive &&
             manager.runState == .running && !manager.isUserPaused
         guard foregroundActive, !manager.isUserPaused else { return }
+        perception?.startForMapping()
         navigation.startRecording()
         if !segmentClosing && pendingSegmentCapture == nil { textRecognition.start() }
     }
@@ -198,6 +207,10 @@ final class MappingCoordinator {
                 requiresPlaceChoice = manager.relocalizationTimedOut
             }
             return
+        }
+        if !restoredPerceptionHazards.isEmpty, canDisplayRestoredGeometry {
+            perception?.hazardMap.restorePersistentSnapshot(restoredPerceptionHazards)
+            restoredPerceptionHazards = []
         }
         automaticRestoreAttempt = false
         requiresPlaceChoice = false
@@ -319,6 +332,7 @@ final class MappingCoordinator {
             geometry.navigation = navigation.graphForSaving()
             geometry.textAnnotations = textRecognition.annotations
             geometry.directionalSignage = textRecognition.directionalSignage
+            geometry.perceptionHazards = perception?.hazardMap.persistentSnapshot() ?? geometry.perceptionHazards
             let previous = continuesSavedMap ? activeMap : nil
             let now = Date()
             let metadata = SavedMapMetadata(
@@ -422,6 +436,9 @@ final class MappingCoordinator {
             savedTrailPrefix = archive.geometry.trail
             storedGeometry = archive.geometry
             storedReferenceImageData = archive.referenceImageData
+            // Keep historical evidence hidden until ARKit confirms that this
+            // session is localized in the saved coordinate space.
+            restoredPerceptionHazards = archive.geometry.perceptionHazards
             observedGeneration = manager.sessionGeneration
             colorCapture.restore(geometry: archive.geometry, generation: observedGeneration)
             navigation.restore(graph: archive.geometry.navigation)
@@ -492,6 +509,7 @@ final class MappingCoordinator {
         storedActiveMap = nil
         storedGeometry = nil
         storedReferenceImageData = nil
+        restoredPerceptionHazards = []
         savedTrailPrefix = []
         requiresRelocalization = false
         activeGeneration = manager.sessionGeneration
@@ -517,6 +535,7 @@ final class MappingCoordinator {
         savedTrailPrefix = []
         storedGeometry = nil
         storedReferenceImageData = nil
+        restoredPerceptionHazards = []
         nextPlaceID = nil
         nextSegmentIndex = 0
         nextSegmentName = nil

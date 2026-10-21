@@ -183,6 +183,9 @@ nonisolated struct ObjectObservation: Identifiable, Sendable {
     var timestamp: TimeInterval
     var ageSeconds: Double = 0
     var uncertain: Bool                // insufficient valid depth → mark, don't trust
+    /// World-space points at the top and bottom of the detection's vertical extent.
+    var topPositionWorld: SIMD3<Float>? = nil
+    var bottomPositionWorld: SIMD3<Float>? = nil
 }
 
 nonisolated enum ProximityState: String, Sendable, CaseIterable {
@@ -211,4 +214,6 @@ nonisolated struct ProximityEvent: Identifiable, Sendable {
     var ttcSeconds: Float? = nil
     /// Bearing to the hazard in degrees (+ = right), for directional cues.
     var bearingDegrees: Float? = nil
+    /// Floor-relative height band used to describe the obstacle safely.
+    var obstacleHeight: ObstacleHeight? = nil
 }

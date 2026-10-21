@@ -38,8 +38,9 @@ struct testApp: App {
                 .preferredColorScheme(.dark)
                 .onAppear {
                     perception.configure(with: ar)
+                    mapping.attach(perception: perception)
                     mapping.navigation.configureSpeech(perception.speech)
-                    mapping.navigation.onRouteWillStart = { perception.pauseForMapping() }
+                    mapping.navigation.onRouteWillStart = { perception.feedback.stop() }
                     perception.guidance.onWillStart = { mapping.navigation.cancelNavigation() }
                     Task {
                         await mapping.setForegroundActive(scenePhase == .active)

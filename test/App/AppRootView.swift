@@ -20,7 +20,9 @@ enum AppMode: String, CaseIterable, Identifiable {
 struct AppRootView: View {
     @Environment(PerceptionSystem.self) private var perception
     @Environment(MappingCoordinator.self) private var mapping
-    @State private var mode: AppMode = .mapping
+    // Start on the live perception console so the shared ARSession, LiDAR,
+    // fusion, and model pipeline are actually visible on first launch.
+    @State private var mode: AppMode = .developer
 
     var body: some View {
         VStack(spacing: 0) {
@@ -53,10 +55,10 @@ struct AppRootView: View {
         }
         .tint(Theme.accent)
         .onChange(of: mode) { _, newMode in
-            if newMode == .mapping && !mapping.navigation.routeActive {
-                perception.pauseForMapping()
-            } else if newMode != .wearer {
-                perception.guidance.stop()
+            if newMode != .wearer {
+                // Stop audible/haptic feedback for the console/map UI, but do
+                // not stop the shared AI pipelines that mapping is consuming.
+                perception.feedback.stop()
             }
         }
     }

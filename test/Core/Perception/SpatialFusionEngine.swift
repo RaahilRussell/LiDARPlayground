@@ -153,6 +153,18 @@ final class SpatialFusionEngine {
             let world: SIMD3<Float>? = frame.trackingIsNormal && !uncertain
                 ? { let w = frame.cameraTransform * SIMD4<Float>(cam, 1); return SIMD3(w.x, w.y, w.z) }()
                 : nil
+            let topCamera = unprojectCamera(nx: bxMin, ny: cyn, depth: median.isFinite ? median : 1,
+                                            intrinsics: frame.intrinsics, dw: dw, dh: dh,
+                                            imageRes: frame.imageResolution)
+            let bottomCamera = unprojectCamera(nx: bxMax, ny: cyn, depth: median.isFinite ? median : 1,
+                                               intrinsics: frame.intrinsics, dw: dw, dh: dh,
+                                               imageRes: frame.imageResolution)
+            let topWorld: SIMD3<Float>? = frame.trackingIsNormal && !uncertain
+                ? { let w = frame.cameraTransform * SIMD4<Float>(topCamera, 1); return SIMD3(w.x, w.y, w.z) }()
+                : nil
+            let bottomWorld: SIMD3<Float>? = frame.trackingIsNormal && !uncertain
+                ? { let w = frame.cameraTransform * SIMD4<Float>(bottomCamera, 1); return SIMD3(w.x, w.y, w.z) }()
+                : nil
             let azimuth = atan2(cam.x, -cam.z) * 180 / .pi
 
             // Region from horizontal box centre in the portrait display.
@@ -166,7 +178,8 @@ final class SpatialFusionEngine {
                 positionCamera: cam, positionWorld: world,
                 azimuthDegrees: azimuth, region: region,
                 boxNormalized: box, timestamp: frame.timestamp,
-                ageSeconds: max(0, now - frame.timestamp), uncertain: uncertain))
+                ageSeconds: max(0, now - frame.timestamp), uncertain: uncertain,
+                topPositionWorld: topWorld, bottomPositionWorld: bottomWorld))
         }
         return results
     }

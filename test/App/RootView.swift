@@ -15,7 +15,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 
 struct RootView: View {
     @Environment(ARSessionManager.self) private var ar
-    @State private var section: AppSection = .sensors
+    @State private var section: AppSection = .ai
 
     var body: some View {
         VStack(spacing: 0) {

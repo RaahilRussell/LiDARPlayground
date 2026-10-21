@@ -40,7 +40,8 @@ final class ProximityEvaluator {
     @discardableResult
     func evaluate(nearest: Float?, confidence: Float?, region: SpatialRegion?,
                   label: String?, isSimulated: Bool, inputTimestamp: TimeInterval,
-                  ttc: Float? = nil, bearing: Float? = nil, inPath: Bool = true) -> ProximityEvent {
+                  ttc: Float? = nil, bearing: Float? = nil, inPath: Bool = true,
+                  obstacleHeight: ObstacleHeight? = nil) -> ProximityEvent {
         let decidedAt = CACurrentMediaTime()
 
         // Decide target state (pure logic lives in ProximityStateMachine).
@@ -64,7 +65,7 @@ final class ProximityEvaluator {
             inputTimestamp: inputTimestamp, decidedAt: decidedAt, hapticEnqueuedAt: enqueuedAt,
             patternName: pattern?.rawValue,
             processingLatencyMs: (decidedAt - inputTimestamp) * 1000,
-            ttcSeconds: ttc, bearingDegrees: bearing)
+            ttcSeconds: ttc, bearingDegrees: bearing, obstacleHeight: obstacleHeight)
 
         lastEvent = event
         recentEvents.insert(event, at: 0)

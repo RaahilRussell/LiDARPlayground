@@ -30,6 +30,7 @@ final class PerceptionSystem {
 
     private(set) var provider: ARSensorProvider?
     private var configured = false
+    private(set) var mappingPerceptionRunning = false
 
     init() {
         feedback = FeedbackCoordinator(haptics: haptics, spatialCue: spatialCue)
@@ -61,11 +62,39 @@ final class PerceptionSystem {
         configured = true
     }
 
+    /// Starts the model/depth/fusion stack alongside MappingCoordinator. Both
+    /// consumers read the same ARSession; mapping never creates a second camera.
+    func startForMapping() {
+        guard configured else { return }
+        mappingPerceptionRunning = true
+        // Mapping is the durable pass, so prefer the highest bundled detector
+        // rather than the low-latency preview variant used by the live console.
+        vision.selectedVariant = .medium
+        vision.start()
+        depth.start()
+        fusion.start()
+        spatial.start()
+        hazardMap.start()
+    }
+
+    /// Releases GPU/Metal-backed work when iOS backgrounds the app. The AR
+    /// session is paused by ARSessionManager; these loops must be paused too.
+    func stopForMapping() {
+        mappingPerceptionRunning = false
+        hazardMap.stop()
+        spatial.stop()
+        fusion.stop()
+        depth.stop()
+        vision.stop()
+    }
+
     /// Leaving the foreground invalidates measurements and live inputs: cancel the
     /// profiler (which restores inference configuration) and pause the inspector.
     func handleLeftForeground() {
         profiler.cancel(reason: "App left the foreground")
         inspector.pause()
+        guidance.stop()
+        stopForMapping()
         vision.clearResults()
         fusion.clearResults()
         spatial.clearResults()
@@ -74,19 +103,11 @@ final class PerceptionSystem {
         speech.stopAll()
     }
 
-    /// Mapping has exclusive use of the expensive sensing pipeline. Preserve
-    /// configuration preferences, but require an explicit restart of perception
-    /// after returning to wearer/developer mode.
+    /// Stops feedback for route/map transitions while leaving the shared
+    /// perception pipeline alive for mapping.
     func pauseForMapping() {
         profiler.cancel(reason: "Opened Maps")
         inspector.pause()
-        guidance.stop()
-        vision.stop()
-        depth.stop()
-        fusion.stop()
-        spatial.stop()
-        proximityDriver.stop()
-        hazardMap.stop()
         proximity.reset()
         feedback.stop()
         spatialCue.stop()

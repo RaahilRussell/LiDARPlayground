@@ -153,7 +153,8 @@ final class ProximityDriver {
             let event = proximity.evaluate(nearest: h.distance, confidence: h.confidence,
                                            region: h.region, label: h.label,
                                            isSimulated: false, inputTimestamp: now,
-                                           ttc: h.ttc, bearing: h.bearing, inPath: inPath)
+                                           ttc: h.ttc, bearing: h.bearing, inPath: inPath,
+                                           obstacleHeight: h.height)
             updateFeedback(state: event.state, distance: h.distance, ttc: h.ttc,
                            inPath: inPath, bearing: h.bearing, now: now)
             log(event)
@@ -207,7 +208,7 @@ final class ProximityDriver {
 
     private struct Hazard {
         let distance: Float; let confidence: Float; let region: SpatialRegion
-        let label: String?; let ttc: Float?; let bearing: Float
+        let label: String?; let ttc: Float?; let bearing: Float; let height: ObstacleHeight
     }
 
     /// Most pressing hazard from the WORLD-ANCHORED memory (persists out of FOV,
@@ -227,7 +228,8 @@ final class ProximityDriver {
         }
         guard stableFrames >= minStableFrames, let d = smoothedDistance else { return nil }
         return Hazard(distance: d, confidence: primary.confidence, region: primary.region,
-                      label: primary.label, ttc: primary.ttc, bearing: primary.bearingDeg)
+                      label: primary.label, ttc: primary.ttc, bearing: primary.bearingDeg,
+                      height: primary.height)
     }
 
     /// Raw geometry uses the measured distance even when the occupancy grid's
@@ -243,7 +245,7 @@ final class ProximityDriver {
         case .center: bearing = 0
         }
         return Hazard(distance: nearest.meters, confidence: nearest.confidence, region: nearest.region,
-                      label: nil, ttc: nil, bearing: bearing)
+                      label: nil, ttc: nil, bearing: bearing, height: .unknown)
     }
 
     nonisolated static func occupancyInput(from regions: [RegionOccupancy], cautionDistance: Float)
