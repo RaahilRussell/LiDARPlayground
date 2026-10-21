@@ -65,6 +65,7 @@ final class PerceptionInspector {
     @ObservationIgnored private var liveTask: Task<Void, Never>?
     @ObservationIgnored private var demoTask: Task<Void, Never>?
     @ObservationIgnored private var analysisInFlight = false
+    @ObservationIgnored private var pollingOperation = 0
     @ObservationIgnored private var demoRunner = DemoRunner()
     @ObservationIgnored private var lastTrackingNormal: Bool?
     @ObservationIgnored private var lastOccupancy: [RegionOccupancy] = []
@@ -82,6 +83,7 @@ final class PerceptionInspector {
 
     func start() {
         guard liveTask == nil, source == .live else { return }
+        pollingOperation += 1
         liveTask = Task { [weak self] in
             while !Task.isCancelled {
                 self?.liveTick()
@@ -94,6 +96,7 @@ final class PerceptionInspector {
     /// Explicit model/proximity toggles control the app-wide live pipelines.
     func stop() {
         liveTask?.cancel(); liveTask = nil
+        invalidatePreviews()
         stopDemo()
     }
 
@@ -108,8 +111,7 @@ final class PerceptionInspector {
             // Demo has its own evaluator. Stop live polling, while preserving
             // real sensing used by other app features.
             liveTask?.cancel(); liveTask = nil
-            metadata = nil
-            previews = nil
+            invalidatePreviews()
             log.append(origin: .demo, kind: .system, message: "Demo mode ON — displaying synthetic data; live pipelines unchanged",
                        at: CACurrentMediaTime())
         case .live:
@@ -168,7 +170,7 @@ final class PerceptionInspector {
             }
             if previewsEnabled && !analysisInFlight { analyze(frame) }
         } else {
-            metadata = nil
+            invalidatePreviews()
         }
 
         logSpatialChanges(system.spatial, at: now)
@@ -179,14 +181,35 @@ final class PerceptionInspector {
     private func analyze(_ frame: SensorFrame) {
         analysisInFlight = true
         let started = CACurrentMediaTime()
+        let operation = pollingOperation
+        let generation = provider?.sessionGeneration
         Task { [weak self] in
             let result = await Self.makePreviews(frame)
             guard let self else { return }
             self.analysisInFlight = false
-            guard self.source == .live else { return }
+            guard self.source == .live, self.liveTask != nil,
+                  let provider = self.provider, let generation,
+                  Self.acceptsPreview(operation: operation, currentOperation: self.pollingOperation,
+                                      sessionGeneration: generation, currentSessionGeneration: provider.sessionGeneration,
+                                      timestamp: frame.timestamp, now: CACurrentMediaTime()),
+                  provider.isCurrentObservation(timestamp: frame.timestamp) else { return }
             self.previews = result
             self.previewProcessMs = (CACurrentMediaTime() - started) * 1000
         }
+    }
+
+    private func invalidatePreviews() {
+        pollingOperation += 1
+        metadata = nil
+        previews = nil
+        previewProcessMs = nil
+    }
+
+    nonisolated static func acceptsPreview(operation: Int, currentOperation: Int,
+                                           sessionGeneration: Int, currentSessionGeneration: Int,
+                                           timestamp: TimeInterval, now: TimeInterval) -> Bool {
+        operation == currentOperation && sessionGeneration == currentSessionGeneration
+            && ARSensorProvider.isFresh(timestamp: timestamp, now: now)
     }
 
     private func logSpatialChanges(_ spatial: SpatialAlgorithmsEngine, at now: TimeInterval) {

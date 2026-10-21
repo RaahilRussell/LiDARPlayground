@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import ARKit
 import Observation
 import QuartzCore
 

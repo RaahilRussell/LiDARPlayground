@@ -45,7 +45,13 @@ final class DepthRefinementEngine {
     }
     func stop() {
         loopTask?.cancel(); loopTask = nil
+        clearResults()
+    }
+
+    func clearResults() {
         previousRefined = nil; previousTranslation = nil
+        rgbImage = nil; rawImage = nil; refinedImage = nil; edgeImage = nil
+        validBefore = 0; validAfter = 0; lastProcessMs = 0
     }
 
     private func loop() async {
@@ -56,8 +62,11 @@ final class DepthRefinementEngine {
     }
 
     private func tick() async {
-        guard !isProcessing, let provider, provider.isRunning,
-              let frame = provider.cameraSnapshot(), frame.depthMap != nil else { return }
+        guard !isProcessing else { return }
+        guard let provider, provider.isRunning,
+              let frame = provider.cameraSnapshot(), frame.depthMap != nil else {
+            clearResults(); return
+        }
         if sessionGeneration != provider.sessionGeneration {
             previousRefined = nil; previousTranslation = nil
             sessionGeneration = provider.sessionGeneration
@@ -81,9 +90,9 @@ final class DepthRefinementEngine {
         let start = CACurrentMediaTime()
         let output = await Self.process(frame: frame, mode: mode, params: params,
                                         range: range, previous: carryPrevious)
-        guard !Task.isCancelled, provider.isRunning,
+        guard !Task.isCancelled,
               provider.sessionGeneration == generation,
-              ARSensorProvider.isFresh(timestamp: frame.timestamp, now: CACurrentMediaTime()) else { return }
+              provider.isCurrentObservation(timestamp: frame.timestamp) else { return }
         lastProcessMs = (CACurrentMediaTime() - start) * 1000
 
         rgbImage = output.rgb

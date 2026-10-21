@@ -172,4 +172,24 @@ struct PerceptionLifecycleTests {
         system.handleEnteredForeground()
         #expect(system.proximityDriver.running && system.guidance.canSpeak)
     }
+
+    @Test func inspectorRejectsResultsFromPreviousPollingOrCameraSession() {
+        #expect(PerceptionInspector.acceptsPreview(operation: 2, currentOperation: 2,
+                                                   sessionGeneration: 4, currentSessionGeneration: 4,
+                                                   timestamp: 10, now: 10.1))
+        #expect(!PerceptionInspector.acceptsPreview(operation: 2, currentOperation: 3,
+                                                    sessionGeneration: 4, currentSessionGeneration: 4,
+                                                    timestamp: 10, now: 10.1))
+        #expect(!PerceptionInspector.acceptsPreview(operation: 2, currentOperation: 2,
+                                                    sessionGeneration: 4, currentSessionGeneration: 5,
+                                                    timestamp: 10, now: 10.1))
+    }
+
+    @Test func inspectorRejectsSlowOrInvalidPreviewResults() {
+        for timestamp in [9.4, 10.1, Double.nan, Double.infinity] {
+            #expect(!PerceptionInspector.acceptsPreview(operation: 2, currentOperation: 2,
+                                                        sessionGeneration: 4, currentSessionGeneration: 4,
+                                                        timestamp: timestamp, now: 10))
+        }
+    }
 }

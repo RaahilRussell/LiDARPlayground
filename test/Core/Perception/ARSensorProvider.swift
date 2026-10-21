@@ -24,6 +24,12 @@ final class ARSensorProvider {
     var sessionGeneration: Int { manager.sessionGeneration }
     var supportsSceneDepth: Bool { manager.supportsSceneDepth }
 
+    /// Recheck a completed worker's source frame against this camera run.
+    /// A short pause/resume keeps the world generation but advances this cutoff.
+    func isCurrentObservation(timestamp: TimeInterval) -> Bool {
+        manager.isCurrentObservation(timestamp: timestamp)
+    }
+
     /// Builds a snapshot of the current frame, or nil if none is available.
     /// Cheap: copies buffer references + a few scalars (no pixel work).
     func snapshot() -> SensorFrame? {

@@ -120,6 +120,7 @@ final class PerceptionSystem {
         resumeProximity = proximityDriver.running
         proximityDriver.stop()
         vision.clearResults()
+        depth.clearResults()
         fusion.clearResults()
         spatial.clearResults()
         hazardMap.clearResults()
